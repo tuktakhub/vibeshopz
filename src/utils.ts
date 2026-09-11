@@ -1,15 +1,25 @@
 import { config } from "./config";
-import type { DeliveryType, OrderStatus } from "./types";
+import type { DeliveryType, DepositStatus, OrderStatus } from "./types";
 
+/** Ambiguous characters (0/O, 1/I) are omitted so codes can be read aloud. */
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function randomCode(length: number): string {
+  let out = "";
+  for (let i = 0; i < length; i += 1) {
+    out += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  }
+  return out;
+}
 
 /** Human-friendly, ambiguity-free order code such as `ORD-7K2M9Q`. */
 export function generateOrderCode(prefix = "ORD"): string {
-  let suffix = "";
-  for (let i = 0; i < 6; i += 1) {
-    suffix += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
-  }
-  return `${prefix}-${suffix}`;
+  return `${prefix}-${randomCode(6)}`;
+}
+
+/** Short code behind a user's invite link, e.g. `K7M2QX`. */
+export function generateReferralCode(): string {
+  return randomCode(6);
 }
 
 export function formatMoney(amount: number, symbol = config.currencySymbol): string {
@@ -61,6 +71,18 @@ const STATUS_LABELS: Record<OrderStatus, string> = {
 
 export function statusLabel(status: string): string {
   return STATUS_LABELS[status as OrderStatus] ?? status;
+}
+
+const DEPOSIT_STATUS_LABELS: Record<DepositStatus, string> = {
+  awaiting_payment: "Awaiting payment",
+  awaiting_review: "Under review",
+  approved: "Approved",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+};
+
+export function depositStatusLabel(status: string): string {
+  return DEPOSIT_STATUS_LABELS[status as DepositStatus] ?? status;
 }
 
 const DELIVERY_LABELS: Record<DeliveryType, string> = {

@@ -1,22 +1,39 @@
 import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { config } from "../config";
-import { getShopInfo, type ShopInfo } from "../settings";
+import { bot as botInstance } from "../core";
+import { deliverOrder } from "../delivery";
+import { payReferralReward } from "../rewards";
+import { getShopInfo } from "../settings";
 import {
+  attachReferrer,
   countProducts,
+  countReferrals,
+  countUserDeposits,
   countUserOrders,
+  createDeposit,
   createOrder,
+  debitBalance,
+  ensureReferralCode,
+  findUserByReferralCode,
+  getDeposit,
   getOrder,
   getProduct,
+  getUser,
   listProducts,
+  listUserDeposits,
   listUserOrders,
+  markDepositCancelled,
   markOrderCancelled,
+  sumUserSpent,
   upsertUser,
 } from "../repository";
+import { notifyAdmins } from "../notify";
 import { clearState, setState, USER_STATES } from "../state";
 import { isAdmin } from "../admins";
 import * as kb from "../keyboards";
 import * as t from "../texts";
-import { clampPage, pageCount } from "../utils";
+import { clampPage, formatMoney, pageCount } from "../utils";
+import type { ShopUser } from "../types";
 import { HTML_PARSE_MODE, render } from "./render";
 
 const HTML = {
@@ -24,33 +41,175 @@ const HTML = {
   link_preview_options: { is_disabled: true },
 };
 
-/* ------------------------ persistent menu screens ----------------------- */
+/* ---------------------------- main screens ------------------------------ */
+
+async function loadUser(userId: number): Promise<ShopUser> {
+  const existing = await getUser(userId);
+  if (existing) return existing;
+
+  // The tracking middleware normally guarantees this row exists; recreate it
+  // defensively rather than crashing a whole screen.
+  await upsertUser({ id: userId, firstName: "User" });
+  const created = await getUser(userId);
+  if (!created) throw new Error(`Could not load user ${userId}`);
+  return created;
+}
 
 /**
- * Renders one of the screens that belong to the persistent bottom menu.
+ * Renders a screen that carries the welcome grid.
  *
- * Commands and menu taps always get a fresh message, because only `sendMessage`
- * can attach a reply keyboard. Inline callbacks edit the existing message and
- * clear its inline buttons — the reply keyboard is already on screen.
+ * A Telegram message can hold only one keyboard, so the grid sits on the
+ * welcome / help / support screens and every other screen routes back to it.
  */
-async function showMenuScreen(
-  ctx: Context,
-  build: (shop: ShopInfo) => string
-): Promise<void> {
-  const shop = await getShopInfo();
-  const text = build(shop);
+async function showGridScreen(ctx: Context, text: string): Promise<void> {
+  await render(ctx, text, kb.welcomeMenu());
+}
 
-  if (ctx.callbackQuery) {
-    await render(ctx, text, new InlineKeyboard());
+async function showHome(ctx: Context): Promise<void> {
+  const shop = await getShopInfo();
+  await showGridScreen(ctx, t.homeScreen(shop));
+}
+
+async function showHelp(ctx: Context): Promise<void> {
+  const shop = await getShopInfo();
+  await showGridScreen(ctx, t.helpText(shop));
+}
+
+async function showSupport(ctx: Context): Promise<void> {
+  const shop = await getShopInfo();
+  await showGridScreen(ctx, t.supportText(shop));
+}
+
+async function showWallet(ctx: Context): Promise<void> {
+  const userId = ctx.from!.id;
+  const [user, deposits] = await Promise.all([
+    loadUser(userId),
+    countUserDeposits(userId),
+  ]);
+  await render(ctx, t.walletScreen(user, deposits), kb.walletKeyboard(deposits > 0));
+}
+
+async function showProfile(ctx: Context): Promise<void> {
+  const userId = ctx.from!.id;
+  const [user, orders, spent, referrals] = await Promise.all([
+    loadUser(userId),
+    countUserOrders(userId),
+    sumUserSpent(userId),
+    countReferrals(userId),
+  ]);
+
+  await render(
+    ctx,
+    t.profileScreen(user, { orders, spent, referrals }),
+    kb.profileKeyboard()
+  );
+}
+
+/** Builds the personal invite link plus a ready-to-forward share link. */
+function inviteLinks(code: string): { link: string; share: string } {
+  const username = botInstance.botInfo?.username ?? "";
+  const link = `https://t.me/${username}?start=ref_${code}`;
+  const text = "Join this shop — here is my invite link:";
+  const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+  return { link, share };
+}
+
+async function showReferral(ctx: Context): Promise<void> {
+  const userId = ctx.from!.id;
+  const [user, referrals, shop] = await Promise.all([
+    loadUser(userId),
+    countReferrals(userId),
+    getShopInfo(),
+  ]);
+
+  const code = await ensureReferralCode(userId);
+  const { link, share } = inviteLinks(code);
+
+  await render(
+    ctx,
+    t.referralScreen({
+      link,
+      referrals,
+      reward: shop.referralReward,
+      balance: Number(user.balance ?? 0),
+    }),
+    kb.referralKeyboard(share)
+  );
+}
+
+async function showDepositAmounts(ctx: Context): Promise<void> {
+  const shop = await getShopInfo();
+  await render(
+    ctx,
+    t.depositAmountPrompt(shop),
+    kb.depositAmountKeyboard(shop.minDeposit)
+  );
+}
+
+/**
+ * Creates a deposit for a chosen amount and shows the manual payment details.
+ * Used both by the preset buttons and by the “Other amount” free-text step.
+ */
+export async function startDeposit(ctx: Context, amount: number): Promise<void> {
+  const shop = await getShopInfo();
+  const userId = ctx.from!.id;
+
+  if (!Number.isFinite(amount) || amount < shop.minDeposit) {
+    await ctx.reply(
+      `The minimum top-up is ${formatMoney(shop.minDeposit)}. Please enter a larger amount, or /cancel.`
+    );
     return;
   }
 
-  await ctx.reply(text, { ...HTML, reply_markup: kb.mainReplyKeyboard() });
+  const deposit = await createDeposit({
+    userId,
+    amount,
+    currency: config.currencySymbol,
+  });
+
+  await clearState(userId);
+  await ctx.reply(t.depositCreated(deposit, shop), {
+    ...HTML,
+    reply_markup: kb.depositPaymentKeyboard(deposit.id),
+  });
 }
 
-const showHome = (ctx: Context) => showMenuScreen(ctx, (shop) => t.mainMenuText(shop));
-const showHelp = (ctx: Context) => showMenuScreen(ctx, (shop) => t.helpText(shop));
-const showSupport = (ctx: Context) => showMenuScreen(ctx, (shop) => t.supportText(shop));
+async function showDepositHistory(ctx: Context, page: number): Promise<void> {
+  const userId = ctx.from!.id;
+  const perPage = config.ordersPerPage;
+  const deposits = await listUserDeposits(userId, 200);
+  const total = deposits.length;
+
+  if (total === 0) {
+    await render(ctx, t.depositHistoryHeader(0), kb.walletKeyboard(false));
+    return;
+  }
+
+  const totalPages = pageCount(total, perPage);
+  const current = clampPage(page, totalPages);
+  const slice = deposits.slice(current * perPage, current * perPage + perPage);
+
+  await render(
+    ctx,
+    t.depositHistoryHeader(total),
+    kb.depositsKeyboard(slice, current, totalPages)
+  );
+}
+
+/**
+ * Reads the `ref_XXXXXX` payload Telegram attaches to an invite deep link.
+ * Attribution is silent — the invitee never has to confirm anything.
+ */
+async function captureReferral(ctx: Context): Promise<void> {
+  const payload = ctx.match;
+  if (typeof payload !== "string" || !payload.trim()) return;
+
+  const code = payload.trim().replace(/^ref[_-]?/i, "");
+  if (!code) return;
+
+  const referrer = await findUserByReferralCode(code);
+  if (referrer) await attachReferrer(ctx.from!.id, referrer.user_id);
+}
 
 async function showCatalogue(
   ctx: Context,
@@ -149,10 +308,15 @@ export function registerCustomerHandlers(bot: Bot): void {
 
   /* ------------------------------ commands ------------------------------ */
 
-  bot.command(["start", "menu"], async (ctx) => {
+  bot.command("start", async (ctx) => {
     await clearState(ctx.from!.id);
-    const shop = await getShopInfo();
-    await ctx.reply(t.welcome(shop), { ...HTML, reply_markup: kb.mainReplyKeyboard() });
+    await captureReferral(ctx);
+    await showHome(ctx);
+  });
+
+  bot.command("menu", async (ctx) => {
+    await clearState(ctx.from!.id);
+    await showHome(ctx);
   });
 
   bot.command("help", async (ctx) => {
@@ -167,38 +331,25 @@ export function registerCustomerHandlers(bot: Bot): void {
     await showOrders(ctx, 0, false);
   });
 
+  bot.command("wallet", async (ctx) => {
+    await showWallet(ctx);
+  });
+
+  bot.command("profile", async (ctx) => {
+    await showProfile(ctx);
+  });
+
+  bot.command(["refer", "invite"], async (ctx) => {
+    await showReferral(ctx);
+  });
+
   bot.command("support", async (ctx) => {
     await showSupport(ctx);
   });
 
   bot.command("cancel", async (ctx) => {
     await clearState(ctx.from!.id);
-    await ctx.reply(t.cancelledWizard(), { ...HTML, reply_markup: kb.mainReplyKeyboard() });
-  });
-
-  /* ----------------------- persistent menu taps ------------------------- */
-
-  // Tapping a reply-keyboard button sends its label back as a plain text
-  // message. These are registered before the free-text wizard handler so a
-  // menu tap always navigates instead of being swallowed by an open wizard.
-  bot.hears(kb.MENU_LABELS.home, async (ctx) => {
-    await clearState(ctx.from!.id);
-    await showHome(ctx);
-  });
-
-  bot.hears(kb.MENU_LABELS.shop, async (ctx) => {
-    await clearState(ctx.from!.id);
-    await showCatalogue(ctx, 0, false);
-  });
-
-  bot.hears(kb.MENU_LABELS.orders, async (ctx) => {
-    await clearState(ctx.from!.id);
-    await showOrders(ctx, 0, false);
-  });
-
-  bot.hears(kb.MENU_LABELS.support, async (ctx) => {
-    await clearState(ctx.from!.id);
-    await showSupport(ctx);
+    await ctx.reply(t.cancelledWizard(), { ...HTML, reply_markup: kb.welcomeMenu() });
   });
 
   bot.command("id", async (ctx) => {
@@ -267,8 +418,49 @@ export function registerCustomerHandlers(bot: Bot): void {
         return;
       }
 
+      const userId = ctx.from.id;
+
+      // Wallet first: money already in the wallet is spent instantly, so the
+      // buyer never waits for an admin. The balance check lives inside
+      // debitBalance, in the database, so two fast taps cannot double-spend.
+      const user = await loadUser(userId);
+      if (product.price > 0 && Number(user.balance ?? 0) >= product.price) {
+        const debited = await debitBalance(userId, product.price);
+
+        if (debited) {
+          const paidOrder = await createOrder({
+            userId,
+            username: ctx.from.username ?? null,
+            firstName: ctx.from.first_name ?? null,
+            product,
+            paidFromBalance: true,
+          });
+
+          await ctx.answerCallbackQuery("Paid from your wallet");
+          const delivery = await deliverOrder(paidOrder);
+
+          if (!delivery.ok) {
+            await ctx.reply(
+              `Your wallet was charged for ${paidOrder.code}, but automatic delivery ` +
+                `failed: ${delivery.error ?? "unknown error"}\n\n` +
+                `An admin has been notified and will deliver it manually.`,
+              HTML
+            );
+            await notifyAdmins(
+              `<b>Delivery failed after a wallet payment</b>\n\n` +
+                `Order ${paidOrder.code} was paid from the wallet but could not be delivered.\n` +
+                `${delivery.error ?? ""}`
+            );
+          }
+
+          // First purchase unlocks the referrer's reward. Safe to call every time.
+          await payReferralReward(userId);
+          return;
+        }
+      }
+
       const order = await createOrder({
-        userId: ctx.from.id,
+        userId,
         username: ctx.from.username ?? null,
         firstName: ctx.from.first_name ?? null,
         product,
@@ -336,5 +528,109 @@ export function registerCustomerHandlers(bot: Bot): void {
     }
 
     await ctx.answerCallbackQuery();
+  });
+
+  /* ------------------------------- wallet ------------------------------- */
+
+  bot.callbackQuery(/^wal:/, async (ctx) => {
+    const [, action, rawValue] = ctx.callbackQuery.data.split(":");
+    const userId = ctx.from.id;
+    const value = rawValue ?? "";
+
+    if (action === "p") {
+      await ctx.answerCallbackQuery();
+      await showWallet(ctx);
+      return;
+    }
+
+    if (action === "add") {
+      await ctx.answerCallbackQuery();
+      await showDepositAmounts(ctx);
+      return;
+    }
+
+    if (action === "amt") {
+      if (value === "custom") {
+        const shop = await getShopInfo();
+        await setState(userId, USER_STATES.depositAmount, {});
+        await ctx.answerCallbackQuery();
+        await ctx.reply(t.askCustomDepositAmount(shop), {
+          ...HTML,
+          reply_markup: kb.cancelWizardKeyboard(),
+        });
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      await startDeposit(ctx, Number.parseFloat(value));
+      return;
+    }
+
+    // Paging is handled before any lookup: the page number is not a deposit id.
+    if (action === "hist") {
+      await ctx.answerCallbackQuery();
+      await showDepositHistory(ctx, Number.parseInt(value, 10) || 0);
+      return;
+    }
+
+    const deposit = await getDeposit(Number.parseInt(value, 10));
+    if (!deposit || deposit.user_id !== userId) {
+      await ctx.answerCallbackQuery("Deposit not found.");
+      return;
+    }
+
+    if (action === "v") {
+      await ctx.answerCallbackQuery();
+      await render(
+        ctx,
+        t.depositDetail(deposit),
+        new InlineKeyboard().text("« Deposit history", "wal:hist:0")
+      );
+      return;
+    }
+
+    if (action === "txn") {
+      if (deposit.status === "approved") {
+        await ctx.answerCallbackQuery("This deposit was already credited.");
+        return;
+      }
+      if (deposit.status === "cancelled" || deposit.status === "rejected") {
+        await ctx.answerCallbackQuery("This deposit is closed — please start a new one.");
+        return;
+      }
+
+      await setState(userId, USER_STATES.depositTxn, { depositId: deposit.id });
+      await ctx.answerCallbackQuery();
+      await ctx.reply(t.askDepositTxnId(deposit), {
+        ...HTML,
+        reply_markup: kb.cancelWizardKeyboard(),
+      });
+      return;
+    }
+
+    if (action === "cancel") {
+      await markDepositCancelled(deposit.id);
+      await clearState(userId);
+      await ctx.answerCallbackQuery("Deposit cancelled");
+      await ctx.reply(t.depositCancelled(deposit), {
+        ...HTML,
+        reply_markup: kb.walletKeyboard(true),
+      });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+  });
+
+  /* ---------------------- profile and referrals ------------------------- */
+
+  bot.callbackQuery("prf", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showProfile(ctx);
+  });
+
+  bot.callbackQuery("ref", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showReferral(ctx);
   });
 }

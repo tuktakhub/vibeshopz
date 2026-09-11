@@ -16,6 +16,9 @@ export const BOT_COMMANDS: CommandSpec[] = [
   { command: "start", description: "Open main menu" },
   { command: "shop", description: "Browse products" },
   { command: "orders", description: "My orders" },
+  { command: "wallet", description: "My wallet" },
+  { command: "profile", description: "My profile" },
+  { command: "refer", description: "Refer & earn" },
   { command: "support", description: "Contact support" },
   { command: "help", description: "How it works" },
 ];

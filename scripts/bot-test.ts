@@ -222,10 +222,13 @@ async function main(): Promise<void> {
   let batch = await push(textMessage("/start"));
   let text = lastText(batch);
   check("buyer /start replies with the shop name", text.includes("Test Shop"), text.slice(0, 80));
+  const welcomeButtons = keyboardData(batch);
   check(
-    "buyer /start shows the persistent menu",
-    replyKeyboardLabels(batch).join("|") === "🏠 Home|🛍 Shop|📜 Orders|💬 Support",
-    JSON.stringify(replyKeyboardLabels(batch))
+    "buyer /start shows the welcome grid",
+    ["cat:p:0", "ord:p:0", "wal:p", "prf", "ref", "m:help"].every((data) =>
+      welcomeButtons.includes(data)
+    ),
+    JSON.stringify(welcomeButtons)
   );
 
   /* --------------------- 2. /admin refuses non-admins --------------------- */
@@ -490,28 +493,183 @@ async function main(): Promise<void> {
     check(`button "${data}" reaches a handler`, !fellThrough);
   }
 
-  /* ----------- 12. every persistent menu label navigates somewhere -------- */
+  /* ------------------- 12. wallet, deposits and referrals ---------------- */
 
-  // The bottom menu sends plain text, so an unhandled label would silently fall
-  // through to the catch-all handler. Each screen is compared against that
-  // fallback to prove the label was actually routed.
-  const fallbackText = lastText(await push(textMessage("zzz not a menu label")));
-
-  const homeText = lastText(await push(textMessage("🏠 Home")));
+  batch = await push(textMessage("/wallet"));
+  const walletText = lastText(batch);
   check(
-    "menu label opens the main menu: 🏠 Home",
-    homeText === fallbackText,
-    homeText.slice(0, 100)
+    "wallet screen shows a balance",
+    walletText.includes("My Wallet") && walletText.includes("Balance"),
+    walletText.slice(0, 130)
+  );
+  checkEqual("a fresh wallet holds nothing", (await repo.getUser(BUYER.id))?.balance, 0);
+
+  batch = await push(buttonPress("wal:add"));
+  check(
+    "wallet offers top-up amounts",
+    keyboardData(batch).some((data) => data.startsWith("wal:amt:")),
+    JSON.stringify(keyboardData(batch))
   );
 
-  for (const label of ["🛍 Shop", "📜 Orders", "💬 Support"]) {
-    const labelText = lastText(await push(textMessage(label)));
-    check(
-      `menu label navigates: ${label}`,
-      labelText.length > 0 && labelText !== fallbackText,
-      labelText.slice(0, 100)
-    );
-  }
+  batch = await push(buttonPress("wal:amt:500"));
+  const depositText = lastText(batch);
+  check(
+    "a deposit shows the manual payment details",
+    depositText.includes("DEP-") && depositText.includes("Deposit"),
+    depositText.slice(0, 170)
+  );
+
+  const depositId = Number(
+    keyboardData(batch)
+      .find((data) => data.startsWith("wal:txn:"))
+      ?.split(":")[2] ?? 0
+  );
+  check("the deposit has an id", depositId > 0, String(depositId));
+
+  await push(buttonPress(`wal:txn:${depositId}`));
+  batch = await push(textMessage("TRXDEP123"));
+  check(
+    "the buyer is told the deposit is under review",
+    lastTextTo(batch, BUYER.id).includes("under review"),
+    lastTextTo(batch, BUYER.id).slice(0, 150)
+  );
+  checkEqual(
+    "the deposit is awaiting review",
+    (await repo.getDeposit(depositId))?.status,
+    "awaiting_review"
+  );
+
+  batch = await push(buttonPress(`adm:d:approve:${depositId}`, ADMIN));
+  check(
+    "the admin sees the deposit credited",
+    lastText(batch).includes("Credited"),
+    lastText(batch).slice(0, 150)
+  );
+  checkEqual("the wallet is credited", (await repo.getUser(BUYER.id))?.balance, 500);
+
+  check(
+    "the buyer is notified about the credit",
+    calls.some(
+      (call) =>
+        call.method === "sendMessage" &&
+        Number(call.payload.chat_id) === BUYER.id &&
+        String(call.payload.text ?? "").includes("Wallet topped up")
+    )
+  );
+
+  /* --- paying from the wallet must complete without an admin --- */
+
+  const walletProductId = await repo.createProduct({
+    name: "Wallet Test Item",
+    description: "Priced so the wallet can cover it.",
+    price: 100,
+    currency: "BDT",
+    category: null,
+    deliveryType: "text",
+    fileId: null,
+    fileName: null,
+    deliveryText: "Wallet purchase delivered.",
+    stock: null,
+  });
+
+  batch = await push(buttonPress(`ord:new:${walletProductId}`));
+  check(
+    "a wallet purchase is confirmed immediately",
+    batch.some(
+      (call) =>
+        call.method === "answerCallbackQuery" &&
+        String(call.payload.text ?? "").includes("wallet")
+    ),
+    JSON.stringify(batch.map((call) => call.method))
+  );
+  checkEqual("the wallet is debited", (await repo.getUser(BUYER.id))?.balance, 400);
+
+  const walletOrder = (await repo.listUserOrders(BUYER.id, 20, 0)).find(
+    (order) => order.product_name === "Wallet Test Item"
+  );
+  checkEqual("the order is delivered without an admin", walletOrder?.status, "delivered");
+  checkEqual(
+    "the order records that the wallet paid",
+    Number(walletOrder?.paid_from_balance ?? 0),
+    1
+  );
+  check(
+    "the buyer receives the product",
+    calls.some(
+      (call) =>
+        call.method === "sendMessage" &&
+        Number(call.payload.chat_id) === BUYER.id &&
+        String(call.payload.text ?? "").includes("Wallet purchase delivered.")
+    )
+  );
+
+  /* --- referrals --- */
+
+  const referrerCode = await repo.ensureReferralCode(ADMIN.id);
+  check(
+    "a referral code is allocated",
+    typeof referrerCode === "string" && referrerCode.length === 6,
+    String(referrerCode)
+  );
+
+  const FRIEND = { id: 555000111, first_name: "Friend", username: "friend" };
+  await push(textMessage(`/start ref_${referrerCode}`, FRIEND));
+  checkEqual(
+    "the invite is attributed to the referrer",
+    (await repo.getUser(FRIEND.id))?.referred_by,
+    ADMIN.id
+  );
+
+  // The friend tops up: approving their first deposit pays the referrer.
+  await push(buttonPress("wal:add", FRIEND));
+  batch = await push(buttonPress("wal:amt:500", FRIEND));
+  const friendDepositId = Number(
+    keyboardData(batch)
+      .find((data) => data.startsWith("wal:txn:"))
+      ?.split(":")[2] ?? 0
+  );
+  await push(buttonPress(`wal:txn:${friendDepositId}`, FRIEND));
+  await push(textMessage("TRXFRIEND1", FRIEND));
+
+  const adminBeforeReward = Number((await repo.getUser(ADMIN.id))?.balance ?? 0);
+  await push(buttonPress(`adm:d:approve:${friendDepositId}`, ADMIN));
+  checkEqual(
+    "the referrer is paid for their first invitee",
+    Number((await repo.getUser(ADMIN.id))?.balance ?? 0) - adminBeforeReward,
+    20
+  );
+
+  // A second qualifying event must not pay twice.
+  const friendProductId = await repo.createProduct({
+    name: "Friend Item",
+    description: "",
+    price: 100,
+    currency: "BDT",
+    category: null,
+    deliveryType: "text",
+    fileId: null,
+    fileName: null,
+    deliveryText: "Friend purchase delivered.",
+    stock: null,
+  });
+  await push(buttonPress(`ord:new:${friendProductId}`, FRIEND));
+  checkEqual(
+    "the reward is never paid twice",
+    Number((await repo.getUser(ADMIN.id))?.balance ?? 0) - adminBeforeReward,
+    20
+  );
+
+  /* --- profile --- */
+
+  batch = await push(buttonPress("prf"));
+  const profileText = lastText(batch);
+  check(
+    "profile shows balance and activity",
+    profileText.includes("My Profile") &&
+      profileText.includes("Balance") &&
+      profileText.includes("Orders:"),
+    profileText.slice(0, 180)
+  );
 
   /* ----------------------------- 13. hygiene ------------------------------ */
 

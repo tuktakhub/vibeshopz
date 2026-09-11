@@ -3,8 +3,11 @@ import { addAdmin, isAdmin } from "../admins";
 import { notifyAdmins, safeSend } from "../notify";
 import {
   createProduct,
+  getDeposit,
   getOrder,
   getProduct,
+  markDepositRejected,
+  markDepositUnderReview,
   markOrderRejected,
   markOrderUnderReview,
   updateProduct,
@@ -29,6 +32,7 @@ import * as kb from "../keyboards";
 import * as t from "../texts";
 import { HTML_PARSE_MODE, sendHtml } from "./render";
 import { bindWizardHandlers, ADMIN_PRODUCT_FILE_STATE } from "./admin";
+import { startDeposit } from "./customer";
 
 const HTML = {
   parse_mode: HTML_PARSE_MODE,
@@ -212,6 +216,56 @@ async function routeText(ctx: Context, state: UserState, text: string): Promise<
     const fresh = (await getOrder(order.id)) ?? order;
     await answer(ctx, t.txnReceived(fresh));
     await notifyAdmins(t.adminNewPayment(fresh), kb.adminOrderKeyboard(fresh, "pending"));
+    return;
+  }
+
+  /* ------------------------ buyer: deposit amount ---------------------- */
+
+  if (name === USER_STATES.depositAmount) {
+    const amount = Number.parseFloat(trimmed);
+
+    if (!isNumeric(trimmed) || !Number.isFinite(amount)) {
+      await nudgeOff(ctx, "Please send the amount as a number, for example 500.");
+      return;
+    }
+
+    await startDeposit(ctx, amount);
+    return;
+  }
+
+  /* ------------------------- buyer: deposit TrxID ---------------------- */
+
+  if (name === USER_STATES.depositTxn) {
+    const depositId = Number(data.depositId ?? 0);
+
+    if (!/^[A-Za-z0-9._-]{4,64}$/.test(trimmed)) {
+      await answer(ctx, t.invalidTrxId());
+      return;
+    }
+
+    const deposit = await getDeposit(depositId);
+    if (!deposit || deposit.user_id !== userId) {
+      await clearState(userId);
+      await answer(ctx, "That deposit could not be found. Open /wallet to try again.");
+      return;
+    }
+    if (deposit.status === "approved") {
+      await clearState(userId);
+      await answer(ctx, "That deposit was already credited to your wallet.");
+      return;
+    }
+    if (deposit.status === "cancelled" || deposit.status === "rejected") {
+      await clearState(userId);
+      await answer(ctx, "That deposit is closed. Open /wallet to start a new one.");
+      return;
+    }
+
+    await markDepositUnderReview(deposit.id, trimmed);
+    await clearState(userId);
+
+    const freshDeposit = (await getDeposit(deposit.id)) ?? deposit;
+    await answer(ctx, t.depositSubmitted(freshDeposit));
+    await notifyAdmins(t.adminNewDeposit(freshDeposit), kb.adminDepositKeyboard(freshDeposit));
     return;
   }
 
@@ -404,6 +458,37 @@ async function routeText(ctx: Context, state: UserState, text: string): Promise<
         return;
       }
     }
+  }
+
+  /* --- reject a wallet deposit --- */
+
+  if (name === ADMIN_STATES.depositReject) {
+    const deposit = await getDeposit(Number(data.depositId ?? 0));
+
+    if (!deposit) {
+      await clearState(userId);
+      await answer(ctx, "That deposit no longer exists.");
+      return;
+    }
+    if (trimmed.length < 2) {
+      await nudgeOff(ctx, "Please send a short reason the buyer will understand.");
+      return;
+    }
+
+    await markDepositRejected(deposit.id, trimmed);
+    await clearState(userId);
+
+    const freshDeposit = (await getDeposit(deposit.id)) ?? deposit;
+    await safeSend(freshDeposit.user_id, t.depositRejected(freshDeposit, trimmed), {
+      parse_mode: "HTML",
+    });
+    await sendHtml(
+      ctx,
+      `<b>Deposit ${escapeHtml(freshDeposit.code)} rejected.</b>\n\n` +
+        `The buyer has been notified with your reason.`,
+      new InlineKeyboard().text("« Back to deposits", "adm:d:list:0")
+    );
+    return;
   }
 
   /* --- reject an order --- */

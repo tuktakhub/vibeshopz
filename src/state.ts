@@ -77,10 +77,13 @@ export const ADMIN_STATES = {
   editProduct: "admin:product:edit",
   deleteProduct: "admin:product:delete",
   orderReject: "admin:order:reject",
+  depositReject: "admin:deposit:reject",
   setting: "admin:setting",
   addAdmin: "admin:admin:add",
 } as const;
 
 export const USER_STATES = {
   submitTxn: "user:order:txn",
+  depositAmount: "user:deposit:amount",
+  depositTxn: "user:deposit:txn",
 } as const;

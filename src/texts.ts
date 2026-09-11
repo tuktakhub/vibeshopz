@@ -1,6 +1,7 @@
-import type { Order, Product } from "./types";
+import type { Deposit, Order, Product, ShopUser } from "./types";
 import type { ShopInfo } from "./settings";
 import {
+  depositStatusLabel,
   escapeHtml,
   formatDateTime,
   formatMoney,
@@ -10,17 +11,15 @@ import {
 
 /* ------------------------------ customer -------------------------------- */
 
-export function welcome(shop: ShopInfo): string {
-  return (
-    `<b>${escapeHtml(shop.shopName)}</b>\n\n` +
-    `Digital products, delivered instantly after your payment is confirmed.\n\n` +
-    `<b>How it works</b>\n` +
-    `1. Pick a product from the catalogue\n` +
-    `2. Pay manually to the number shown at checkout\n` +
-    `3. Send the transaction ID (TrxID) here\n` +
-    `4. An admin verifies the payment and the product is delivered automatically\n\n` +
-    `Use the buttons below, or the commands /products, /orders, /support.`
-  );
+/**
+ * The entry screen.
+ *
+ * One line plus the button grid below it — the grid carries the navigation, and
+ * the full walkthrough lives at /help so it is available on request rather than
+ * filling the first screen.
+ */
+export function homeScreen(shop: ShopInfo): string {
+  return `🎉 <b>Welcome to ${escapeHtml(shop.shopName)}!</b>`;
 }
 
 export function helpText(shop: ShopInfo): string {
@@ -206,11 +205,207 @@ export function cancelledWizard(): string {
   return "Cancelled. Nothing was changed.";
 }
 
-export function mainMenuText(shop: ShopInfo): string {
+/* ------------------------------- wallet --------------------------------- */
+
+export function walletScreen(user: ShopUser, depositCount: number): string {
   return (
-    `<b>${escapeHtml(shop.shopName)}</b>\n\n` +
-    `Browse the catalogue, place an order and pay manually. As soon as an admin ` +
-    `confirms your payment, the product is delivered to you automatically.`
+    `<b>💰 My Wallet</b>\n\n` +
+    `Balance: <b>${formatMoney(Number(user.balance ?? 0))}</b>\n\n` +
+    `Money in your wallet is spent instantly at checkout — no waiting for an ` +
+    `admin to confirm each order. Top-ups are still verified by hand.\n\n` +
+    `Deposits so far: ${depositCount}`
+  );
+}
+
+export function depositAmountPrompt(shop: ShopInfo): string {
+  return (
+    `<b>💰 Add money</b>\n\n` +
+    `Choose an amount to top up. The minimum is ${formatMoney(shop.minDeposit)}.\n\n` +
+    `Use “Other amount” to enter your own.`
+  );
+}
+
+export function askCustomDepositAmount(shop: ShopInfo): string {
+  return (
+    `Send the amount you want to add, as a number.\n\n` +
+    `Minimum: ${formatMoney(shop.minDeposit)}.`
+  );
+}
+
+export function depositCreated(deposit: Deposit, shop: ShopInfo): string {
+  const lines = [
+    `<b>Deposit ${deposit.code}</b>`,
+    ``,
+    `Amount: <b>${formatMoney(deposit.amount)}</b>`,
+    `Status: ${depositStatusLabel(deposit.status)}`,
+    ``,
+    `<b>How to pay</b>`,
+    `Method: ${escapeHtml(shop.paymentMethodName)}`,
+  ];
+
+  if (shop.paymentNumber) {
+    lines.push(`Number: <code>${escapeHtml(shop.paymentNumber)}</code>`);
+  }
+  if (shop.paymentInstructions) {
+    lines.push(``, escapeHtml(shop.paymentInstructions));
+  }
+  if (shop.paymentNote) {
+    lines.push(``, `<i>${escapeHtml(shop.paymentNote)}</i>`);
+  }
+
+  lines.push(
+    ``,
+    `After paying, tap the button below and send the Transaction ID (TrxID).`
+  );
+  return lines.join("\n");
+}
+
+export function askDepositTxnId(deposit: Deposit): string {
+  return (
+    `Send the Transaction ID (TrxID) for deposit <b>${deposit.code}</b> ` +
+    `of ${formatMoney(deposit.amount)}.`
+  );
+}
+
+export function invalidTrxId(): string {
+  return (
+    `That does not look like a transaction ID. It should be 4–64 letters, ` +
+    `digits, dots, dashes or underscores. Please send it again, or /cancel.`
+  );
+}
+
+export function depositSubmitted(deposit: Deposit): string {
+  return (
+    `<b>Deposit ${deposit.code} is under review.</b>\n\n` +
+    `Amount: ${formatMoney(deposit.amount)}\n` +
+    `TrxID: <code>${escapeHtml(deposit.txn_id ?? "")}</code>\n\n` +
+    `An admin will verify the payment and your wallet will be credited. ` +
+    `You will get a message here as soon as it is done.`
+  );
+}
+
+export function depositCredited(deposit: Deposit, balance: number): string {
+  return (
+    `✅ <b>Wallet topped up</b>\n\n` +
+    `${formatMoney(deposit.amount)} has been added to your wallet ` +
+    `(deposit ${deposit.code}).\n` +
+    `New balance: <b>${formatMoney(balance)}</b>`
+  );
+}
+
+export function depositRejected(deposit: Deposit, reason: string): string {
+  return (
+    `<b>Deposit ${deposit.code} was rejected</b>\n\n` +
+    `Amount: ${formatMoney(deposit.amount)}\n` +
+    `Reason: ${escapeHtml(reason)}\n\n` +
+    `If you think this is a mistake, contact support with your TrxID.`
+  );
+}
+
+export function depositCancelled(deposit: Deposit): string {
+  return `Deposit ${deposit.code} was cancelled. Nothing was charged.`;
+}
+
+export function depositHistoryHeader(total: number): string {
+  return total === 0
+    ? `<b>🧾 Deposit history</b>\n\nNo deposits yet.`
+    : `<b>🧾 Deposit history</b>\n\n${total} deposit(s). Tap one for the details.`;
+}
+
+export function depositDetail(deposit: Deposit): string {
+  const lines = [
+    `<b>Deposit ${deposit.code}</b>`,
+    ``,
+    `Amount: <b>${formatMoney(deposit.amount)}</b>`,
+    `Status: ${depositStatusLabel(deposit.status)}`,
+    `Created: ${formatDateTime(deposit.created_at)}`,
+  ];
+
+  if (deposit.txn_id) lines.push(`TrxID: <code>${escapeHtml(deposit.txn_id)}</code>`);
+  if (deposit.approved_at) lines.push(`Approved: ${formatDateTime(deposit.approved_at)}`);
+  if (deposit.admin_note) lines.push(``, `<b>Note</b>\n${escapeHtml(deposit.admin_note)}`);
+
+  return lines.join("\n");
+}
+
+/* ------------------------- profile and referrals ------------------------ */
+
+export interface ProfileStats {
+  orders: number;
+  spent: number;
+  referrals: number;
+}
+
+export function profileScreen(user: ShopUser, stats: ProfileStats): string {
+  return (
+    `<b>🚀 My Profile</b>\n\n` +
+    `Name: <b>${escapeHtml(user.first_name ?? "—")}</b>\n` +
+    `Username: ${user.username ? `@${escapeHtml(user.username)}` : "—"}\n` +
+    `Telegram ID: <code>${user.user_id}</code>\n\n` +
+    `<b>Wallet</b>\n` +
+    `Balance: <b>${formatMoney(Number(user.balance ?? 0))}</b>\n\n` +
+    `<b>Activity</b>\n` +
+    `Orders: ${stats.orders}\n` +
+    `Total spent: ${formatMoney(stats.spent)}\n` +
+    `Friends invited: ${stats.referrals}\n\n` +
+    `Member since ${formatDateTime(user.created_at)}`
+  );
+}
+
+export function referralScreen(input: {
+  link: string;
+  referrals: number;
+  reward: number;
+  balance: number;
+}): string {
+  const rewardLine =
+    input.reward > 0
+      ? `You earn <b>${formatMoney(input.reward)}</b> in wallet credit for every friend ` +
+        `who makes their first purchase.`
+      : `Refer & Earn is currently switched off by the shop.`;
+
+  return (
+    `<b>🎁 Refer &amp; Earn</b>\n\n` +
+    `${rewardLine}\n\n` +
+    `<b>Your invite link</b>\n` +
+    `<code>${escapeHtml(input.link)}</code>\n\n` +
+    `Friends invited: <b>${input.referrals}</b>\n` +
+    `Wallet balance: <b>${formatMoney(input.balance)}</b>\n\n` +
+    `Share the link — the reward is credited automatically when your friend ` +
+    `completes their first deposit or order.`
+  );
+}
+
+/* ---------------------------- admin: deposits --------------------------- */
+
+export function adminDepositsHeader(total: number): string {
+  return total === 0
+    ? `<b>Wallet deposits</b>\n\nNothing waiting for review.`
+    : `<b>Wallet deposits</b>\n\n${total} deposit(s). Tap one to review it.`;
+}
+
+export function adminDepositDetail(deposit: Deposit): string {
+  const lines = [
+    `<b>Deposit ${deposit.code}</b>`,
+    ``,
+    `User: ${mention(null, null, deposit.user_id)}`,
+    `Amount: <b>${formatMoney(deposit.amount)}</b>`,
+    `Status: ${depositStatusLabel(deposit.status)}`,
+    `Created: ${formatDateTime(deposit.created_at)}`,
+  ];
+
+  if (deposit.txn_id) lines.push(`TrxID: <code>${escapeHtml(deposit.txn_id)}</code>`);
+  if (deposit.admin_note) lines.push(``, `<b>Note</b>\n${escapeHtml(deposit.admin_note)}`);
+
+  return lines.join("\n");
+}
+
+export function adminNewDeposit(deposit: Deposit): string {
+  return (
+    `<b>💰 New wallet deposit</b>\n\n` +
+    `<b>Deposit ${deposit.code}</b>\n` +
+    `Amount: <b>${formatMoney(deposit.amount)}</b>\n` +
+    `TrxID: <code>${escapeHtml(deposit.txn_id ?? "")}</code>`
   );
 }
 

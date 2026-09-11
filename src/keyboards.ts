@@ -1,48 +1,35 @@
-import { InlineKeyboard, Keyboard } from "grammy";
-import type { Order, OrderStatus, Product } from "./types";
-import { formatMoney, statusLabel, truncate } from "./utils";
-
-/* --------------------------- persistent menu ---------------------------- */
-
-/**
- * Labels of the always-visible bottom menu.
- *
- * A reply keyboard sends its label back as an ordinary text message, so the bot
- * listens for these exact strings — changing a label here is enough, the
- * handlers pick the new value up automatically.
- */
-export const MENU_LABELS = {
-  home: "🏠 Home",
-  shop: "🛍 Shop",
-  orders: "📜 Orders",
-  support: "💬 Support",
-} as const;
-
-/**
- * The persistent menu under the message box.
- *
- * Unlike an inline keyboard this stays on screen until it is replaced, which is
- * what makes the bot feel like it has a real menu. Laid out as a 2x2 grid.
- */
-export function mainReplyKeyboard(): Keyboard {
-  return new Keyboard()
-    .text(MENU_LABELS.home)
-    .text(MENU_LABELS.shop)
-    .row()
-    .text(MENU_LABELS.orders)
-    .text(MENU_LABELS.support);
-}
+import { InlineKeyboard } from "grammy";
+import type { Deposit, Order, OrderStatus, Product } from "./types";
+import {
+  depositStatusLabel,
+  formatMoney,
+  statusLabel,
+  truncate,
+} from "./utils";
 
 /* ----------------------------- customer --------------------------------- */
 
-export function mainMenu(): InlineKeyboard {
+/**
+ * The welcome grid — the bot's main menu.
+ *
+ * Laid out two buttons per row. Every destination here is also reachable by
+ * command, so the grid is a shortcut rather than the only way in.
+ */
+export function welcomeMenu(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Browse products", "cat:p:0")
+    .text("🛍 Shop Products", "cat:p:0")
+    .text("📦 My Orders", "ord:p:0")
     .row()
-    .text("My orders", "ord:p:0")
-    .text("Support", "m:support")
+    .text("💰 My Wallet", "wal:p")
+    .text("🚀 My Profile", "prf")
     .row()
-    .text("How it works", "m:help");
+    .text("🎁 Refer & Earn", "ref")
+    .text("💬 Help & Support", "m:help");
+}
+
+/** Kept as an alias so existing screens (empty states, fallbacks) still work. */
+export function mainMenu(): InlineKeyboard {
+  return welcomeMenu();
 }
 
 function paginationRow(
@@ -136,9 +123,11 @@ export function adminMenu(): InlineKeyboard {
     .text("Orders", "adm:o:list:all:0")
     .row()
     .text("Pending payments", "adm:o:list:pending:0")
-    .text("Settings", "adm:s")
+    .text("Deposits", "adm:d:list:0")
     .row()
+    .text("Settings", "adm:s")
     .text("Admins", "adm:a:list")
+    .row()
     .text("Refresh stats", "adm:home");
 }
 
@@ -277,6 +266,10 @@ export function adminSettingsKeyboard(): InlineKeyboard {
     .row()
     .text("Payment note", "adm:s:edit:payment_note")
     .row()
+    .text("Minimum deposit", "adm:s:edit:min_deposit")
+    .row()
+    .text("Referral reward", "adm:s:edit:referral_reward")
+    .row()
     .text("« Admin menu", "adm:home");
 }
 
@@ -301,3 +294,109 @@ export const ORDER_STATUSES: OrderStatus[] = [
   "rejected",
   "cancelled",
 ];
+
+/* --------------------------- wallet and profile -------------------------- */
+
+export function walletKeyboard(hasDeposits: boolean): InlineKeyboard {
+  const keyboard = new InlineKeyboard().text("💰 Add money", "wal:add").row();
+  if (hasDeposits) keyboard.text("🧾 Deposit history", "wal:hist:0").row();
+  keyboard.text("🛍 Shop Products", "cat:p:0").row();
+  keyboard.text("« Main menu", "m:home");
+  return keyboard;
+}
+
+/**
+ * Quick top-up amounts derived from the shop minimum, so the buttons stay
+ * sensible whatever the admin sets. Free entry is always offered too.
+ */
+export function depositAmountKeyboard(minDeposit: number): InlineKeyboard {
+  const presets = [minDeposit, minDeposit * 2, minDeposit * 5, minDeposit * 10];
+  const keyboard = new InlineKeyboard();
+
+  presets.forEach((amount, index) => {
+    keyboard.text(formatMoney(amount), `wal:amt:${amount}`);
+    if (index % 2 === 1) keyboard.row();
+  });
+  if (presets.length % 2 === 1) keyboard.row();
+
+  keyboard.text("✏️ Other amount", "wal:amt:custom").row();
+  keyboard.text("« Back to wallet", "wal:p");
+  return keyboard;
+}
+
+export function depositPaymentKeyboard(depositId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ I have paid — send TrxID", `wal:txn:${depositId}`)
+    .row()
+    .text("Cancel deposit", `wal:cancel:${depositId}`);
+}
+
+export function profileKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("💰 My Wallet", "wal:p")
+    .text("📦 My Orders", "ord:p:0")
+    .row()
+    .text("🎁 Refer & Earn", "ref")
+    .row()
+    .text("« Main menu", "m:home");
+}
+
+/** `shareUrl` is a t.me/share link, so the invite can be forwarded anywhere. */
+export function referralKeyboard(shareUrl: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .url("📤 Share invite link", shareUrl)
+    .row()
+    .text("💰 My Wallet", "wal:p")
+    .row()
+    .text("« Main menu", "m:home");
+}
+
+export function depositsKeyboard(
+  deposits: Deposit[],
+  page: number,
+  totalPages: number
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const deposit of deposits) {
+    keyboard
+      .text(
+        `${deposit.code} · ${formatMoney(deposit.amount)} · ${depositStatusLabel(deposit.status)}`,
+        `wal:v:${deposit.id}`
+      )
+      .row();
+  }
+  paginationRow(keyboard, "wal:hist", page, totalPages);
+  keyboard.text("« Back to wallet", "wal:p");
+  return keyboard;
+}
+
+/* --------------------------- admin: deposits ----------------------------- */
+
+export function adminDepositsKeyboard(
+  deposits: Deposit[],
+  page: number,
+  totalPages: number
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const deposit of deposits) {
+    keyboard
+      .text(
+        `${deposit.code} · ${formatMoney(deposit.amount)} · ${depositStatusLabel(deposit.status)}`,
+        `adm:d:view:${deposit.id}`
+      )
+      .row();
+  }
+  paginationRow(keyboard, "adm:d:list", page, totalPages);
+  keyboard.text("« Admin menu", "adm:home");
+  return keyboard;
+}
+
+export function adminDepositKeyboard(deposit: Deposit): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (deposit.status === "awaiting_payment" || deposit.status === "awaiting_review") {
+    keyboard.text("✅ Approve & credit", `adm:d:approve:${deposit.id}`).row();
+    keyboard.text("❌ Reject", `adm:d:reject:${deposit.id}`).row();
+  }
+  keyboard.text("« Back to deposits", "adm:d:list:0");
+  return keyboard;
+}

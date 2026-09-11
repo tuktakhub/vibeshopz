@@ -4,15 +4,23 @@ import { deliverOrder } from "../delivery";
 import { getShopInfo, setSetting } from "../settings";
 import {
   countDeliveredRevenue,
+  countDeposits,
   countOrders,
   countProducts,
+  creditBalance,
   deleteProduct,
+  getDeposit,
   getOrder,
   getProduct,
+  getUser,
+  listDeposits,
   listOrders,
   listProducts,
+  markDepositApproved,
   updateProduct,
 } from "../repository";
+import { safeSend } from "../notify";
+import { payReferralReward } from "../rewards";
 import type { SettingKey } from "../schema";
 import {
   ADD_PRODUCT_STATES,
@@ -190,6 +198,11 @@ async function approveOrder(
   const result = await deliverOrder(order);
   const fresh = (await getOrder(order.id)) ?? order;
 
+  if (result.ok) {
+    // A buyer's first completed purchase may unlock a reward for their inviter.
+    await payReferralReward(order.user_id);
+  }
+
   const footer = result.ok
     ? `<b>${result.ok ? "Delivered" : "Failed"}</b>${
         result.error
@@ -205,6 +218,27 @@ async function approveOrder(
   );
 }
 
+/* ------------------------------- deposits ------------------------------- */
+
+async function showDeposits(ctx: Context, page: number): Promise<void> {
+  const perPage = 8;
+  const total = await countDeposits();
+
+  if (total === 0) {
+    await render(ctx, t.adminDepositsHeader(0), kb.adminMenu());
+    return;
+  }
+
+  const totalPages = pageCount(total, perPage);
+  const current = clampPage(page, totalPages);
+  const deposits = await listDeposits({
+    limit: perPage,
+    offset: current * perPage,
+  });
+
+  await render(ctx, t.adminDepositsHeader(total), kb.adminDepositsKeyboard(deposits, current, totalPages));
+}
+
 /* ------------------------------- settings ------------------------------- */
 
 const SETTING_LABELS: Record<SettingKey, string> = {
@@ -214,6 +248,8 @@ const SETTING_LABELS: Record<SettingKey, string> = {
   payment_number: "Payment number",
   payment_instructions: "Payment instructions",
   payment_note: "Payment note",
+  min_deposit: "Minimum deposit",
+  referral_reward: "Referral reward",
 };
 
 const SETTING_PROMPTS: Record<SettingKey, string> = {
@@ -223,6 +259,9 @@ const SETTING_PROMPTS: Record<SettingKey, string> = {
   payment_number: "Send the number buyers should pay to.",
   payment_instructions: "Send the payment instructions shown at checkout.",
   payment_note: "Send the short reminder shown under the payment details, or /skip to clear it.",
+  min_deposit: "Send the smallest wallet top-up you accept (a number, for example 50).",
+  referral_reward:
+    "Send the amount credited to a referrer once their invitee becomes a customer. Send 0 to switch Refer & Earn off.",
 };
 
 function isSettingKey(value: string): value is SettingKey {
@@ -268,6 +307,83 @@ export function registerAdminHandlers(bot: Bot): void {
       await ctx.answerCallbackQuery();
       await showAdminHome(ctx);
       return;
+    }
+
+    /* ----------------------------- deposits ----------------------------- */
+
+    if (section === "d") {
+      if (action === "list") {
+        await ctx.answerCallbackQuery();
+        await showDeposits(ctx, Number.parseInt(parts[3] ?? "0", 10) || 0);
+        return;
+      }
+
+      const deposit = await getDeposit(Number.parseInt(parts[3] ?? "0", 10));
+      if (!deposit) {
+        await ctx.answerCallbackQuery("Deposit not found.");
+        return;
+      }
+
+      if (action === "view") {
+        await ctx.answerCallbackQuery();
+        await render(
+          ctx,
+          t.adminDepositDetail(deposit),
+          kb.adminDepositKeyboard(deposit)
+        );
+        return;
+      }
+
+      if (action === "approve") {
+        if (deposit.status === "approved") {
+          await ctx.answerCallbackQuery("This deposit was already credited.");
+          return;
+        }
+        if (deposit.status === "rejected" || deposit.status === "cancelled") {
+          await ctx.answerCallbackQuery("This deposit is closed.");
+          return;
+        }
+
+        await ctx.answerCallbackQuery("Crediting the wallet...");
+        await markDepositApproved(deposit.id);
+        await creditBalance(deposit.user_id, deposit.amount);
+
+        const credited = await getUser(deposit.user_id);
+        await safeSend(
+          deposit.user_id,
+          t.depositCredited(deposit, Number(credited?.balance ?? 0)),
+          { parse_mode: "HTML" }
+        );
+
+        // A first approved deposit also unlocks the referrer's reward.
+        await payReferralReward(deposit.user_id);
+
+        const freshDeposit = (await getDeposit(deposit.id)) ?? deposit;
+        await render(
+          ctx,
+          `${t.adminDepositDetail(freshDeposit)}\n\n<b>Credited</b>\n\n` +
+            `Handled by admin <code>${adminId}</code>.`,
+          kb.adminDepositKeyboard(freshDeposit)
+        );
+        return;
+      }
+
+      if (action === "reject") {
+        if (deposit.status === "approved") {
+          await ctx.answerCallbackQuery(
+            "This deposit was already credited — reverse it manually if that was a mistake."
+          );
+          return;
+        }
+
+        await setState(adminId, ADMIN_STATES.depositReject, { depositId: deposit.id });
+        await ctx.answerCallbackQuery();
+        await ctx.reply(`Send the reason for rejecting deposit ${deposit.code}.`, {
+          parse_mode: "HTML",
+          reply_markup: kb.cancelActionKeyboard("adm:d:list:0"),
+        });
+        return;
+      }
     }
 
     /* ----------------------------- products ----------------------------- */

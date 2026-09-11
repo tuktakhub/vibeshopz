@@ -35,6 +35,16 @@ export interface ShopInfo {
   paymentNumber: string;
   paymentInstructions: string;
   paymentNote: string;
+  /** Smallest wallet top-up the shop accepts. */
+  minDeposit: number;
+  /** Credited to a referrer once their invitee becomes a paying customer. */
+  referralReward: number;
+}
+
+/** Settings are stored as text, so amounts are parsed on the way out. */
+function toAmount(raw: string, fallback: number): number {
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 /**
@@ -64,5 +74,10 @@ export async function getShopInfo(): Promise<ShopInfo> {
       config.paymentDefaults.instructions
     ),
     paymentNote: pick("payment_note", config.paymentDefaults.note),
+    minDeposit: toAmount(pick("min_deposit", ""), config.depositDefaults.min),
+    referralReward: toAmount(
+      pick("referral_reward", ""),
+      config.depositDefaults.referralReward
+    ),
   };
 }

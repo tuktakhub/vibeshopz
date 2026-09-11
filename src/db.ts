@@ -1,6 +1,6 @@
 import { createClient, type Client } from "@libsql/client";
 import { config } from "./config";
-import { SCHEMA_SQL } from "./schema";
+import { ADDED_COLUMNS, POST_MIGRATION_SQL, SCHEMA_SQL } from "./schema";
 
 /** Values we ever bind into a statement. */
 export type SqlArg = string | number | bigint | null;
@@ -52,8 +52,24 @@ export async function insert(sql: string, args: SqlArg[] = []): Promise<number> 
 let schemaReady: Promise<void> | undefined;
 
 /**
- * Creates the tables if they do not exist yet. Safe to call on every request:
- * the work happens at most once per serverless container.
+ * Adds columns that were introduced after the first release.
+ *
+ * `CREATE TABLE IF NOT EXISTS` cannot extend a table that already exists, so a
+ * deployed shop would never see new columns otherwise. Reading
+ * `PRAGMA table_info` first makes this safe to repeat and keeps existing rows.
+ */
+async function addMissingColumns(): Promise<void> {
+  for (const { table, column, definition } of ADDED_COLUMNS) {
+    const columns = await all<{ name: string }>(`PRAGMA table_info(${table})`);
+    if (columns.some((entry) => entry.name === column)) continue;
+    await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+/**
+ * Creates missing tables, migrates existing ones, then builds any index that
+ * depends on a migrated column. Safe to call on every request: the work happens
+ * at most once per serverless container.
  */
 export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
@@ -62,6 +78,8 @@ export function ensureSchema(): Promise<void> {
         SCHEMA_SQL.map((sql) => ({ sql })),
         "write"
       )
+      .then(() => addMissingColumns())
+      .then(() => db().batch(POST_MIGRATION_SQL.map((sql) => ({ sql })), "write"))
       .then(() => undefined)
       .catch((error) => {
         // Allow a later request to retry if the first attempt failed.

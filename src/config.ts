@@ -89,6 +89,16 @@ export const config = {
     },
   },
 
+  /** Fallback wallet and referral rules, overridable from the admin panel. */
+  depositDefaults: {
+    get min(): number {
+      return intFromEnv("MIN_DEPOSIT", 50);
+    },
+    get referralReward(): number {
+      return intFromEnv("REFERRAL_REWARD", 20);
+    },
+  },
+
   get productsPerPage(): number {
     return intFromEnv("PRODUCTS_PER_PAGE", 8);
   },

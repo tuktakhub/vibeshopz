@@ -52,6 +52,8 @@ export interface Order {
   created_at: string;
   updated_at: string;
   delivered_at: string | null;
+  /** 1 when the order was paid from the wallet instead of a manual transfer. */
+  paid_from_balance: number;
 }
 
 export interface ShopUser {
@@ -59,6 +61,44 @@ export interface ShopUser {
   first_name: string | null;
   last_name: string | null;
   username: string | null;
+  /** Wallet balance, in the shop currency. */
+  balance: number;
+  /** Short code used to build this user's invite link. */
+  referral_code: string | null;
+  /** Telegram id of the user who invited them, if any. */
+  referred_by: number | null;
+  /** 1 once the referrer has been paid for bringing this user in. */
+  referral_rewarded: number;
   created_at: string;
   last_seen_at: string | null;
+}
+
+/**
+ * Deposit lifecycle, mirroring orders:
+ *
+ *   awaiting_payment -> the amount is chosen but no TrxID was sent yet
+ *   awaiting_review  -> a TrxID was submitted and an admin has to check it
+ *   approved         -> the amount was credited to the wallet
+ *   rejected         -> an admin rejected the transfer (reason in admin_note)
+ *   cancelled        -> the buyer abandoned the deposit
+ */
+export type DepositStatus =
+  | "awaiting_payment"
+  | "awaiting_review"
+  | "approved"
+  | "rejected"
+  | "cancelled";
+
+export interface Deposit {
+  id: number;
+  code: string;
+  user_id: number;
+  amount: number;
+  currency: string;
+  status: DepositStatus;
+  txn_id: string | null;
+  admin_note: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
 }

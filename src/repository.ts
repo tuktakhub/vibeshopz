@@ -1,6 +1,14 @@
 import { all, insert, one, run, type SqlArg } from "./db";
-import { generateOrderCode } from "./utils";
-import type { DeliveryType, Order, OrderStatus, Product } from "./types";
+import { generateOrderCode, generateReferralCode } from "./utils";
+import type {
+  DeliveryType,
+  Deposit,
+  DepositStatus,
+  Order,
+  OrderStatus,
+  Product,
+  ShopUser,
+} from "./types";
 
 /* ------------------------------ users ----------------------------------- */
 
@@ -140,7 +148,8 @@ export async function decrementStock(productId: number): Promise<void> {
 /* ------------------------------ orders ---------------------------------- */
 
 const ORDER_COLUMNS = `id, code, user_id, username, first_name, product_id, product_name,
-  price, currency, status, txn_id, sender_number, admin_note, created_at, updated_at, delivered_at`;
+  price, currency, status, txn_id, sender_number, admin_note, paid_from_balance,
+  created_at, updated_at, delivered_at`;
 
 export async function getOrder(id: number): Promise<Order | undefined> {
   return one<Order>(`SELECT ${ORDER_COLUMNS} FROM orders WHERE id = ?`, [id]);
@@ -158,14 +167,24 @@ export async function createOrder(params: {
   username: string | null;
   firstName: string | null;
   product: Product;
+  /**
+   * True when the wallet already paid for the order. Such an order skips the
+   * manual-payment step and starts life as `awaiting_review`, so it is visible
+   * in the admin queue if the automatic delivery ever fails.
+   */
+  paidFromBalance?: boolean;
 }): Promise<Order> {
+  const paid = params.paidFromBalance ? 1 : 0;
+  const status: OrderStatus = params.paidFromBalance ? "awaiting_review" : "awaiting_payment";
+
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const code = generateOrderCode();
     try {
       const id = await insert(
         `INSERT INTO orders
-           (code, user_id, username, first_name, product_id, product_name, price, currency, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_payment')`,
+           (code, user_id, username, first_name, product_id, product_name, price, currency,
+            status, paid_from_balance)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           code,
           params.userId,
@@ -175,6 +194,8 @@ export async function createOrder(params: {
           params.product.name,
           params.product.price,
           params.product.currency,
+          status,
+          paid,
         ]
       );
       const created = await getOrder(id);
@@ -288,5 +309,251 @@ export async function markOrderCancelled(orderId: number): Promise<void> {
      SET status = 'cancelled', updated_at = datetime('now')
      WHERE id = ?`,
     [orderId]
+  );
+}
+
+/* ------------------------- wallet and referrals -------------------------- */
+
+const USER_COLUMNS = `user_id, first_name, last_name, username, balance,
+  referral_code, referred_by, referral_rewarded, created_at, last_seen_at`;
+
+export async function getUser(userId: number): Promise<ShopUser | undefined> {
+  return one<ShopUser>(`SELECT ${USER_COLUMNS} FROM users WHERE user_id = ?`, [userId]);
+}
+
+export async function findUserByReferralCode(
+  code: string
+): Promise<ShopUser | undefined> {
+  return one<ShopUser>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE UPPER(referral_code) = UPPER(?)`,
+    [code.trim()]
+  );
+}
+
+/**
+ * Returns a user's invite code, allocating one on first use.
+ *
+ * The unique index on `referral_code` is the collision guard: a taken code makes
+ * the UPDATE fail, and the loop simply generates another one.
+ */
+export async function ensureReferralCode(userId: number): Promise<string> {
+  const existing = await getUser(userId);
+  if (existing?.referral_code) return existing.referral_code;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const code = generateReferralCode();
+    try {
+      await run(
+        "UPDATE users SET referral_code = ? WHERE user_id = ? AND referral_code IS NULL",
+        [code, userId]
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("unique")) throw error;
+      continue;
+    }
+
+    const saved = await getUser(userId);
+    if (saved?.referral_code) return saved.referral_code;
+  }
+
+  throw new Error("Could not allocate a referral code.");
+}
+
+/**
+ * Records who invited a user. Only the first invitation counts, and nobody can
+ * invite themselves.
+ */
+export async function attachReferrer(
+  userId: number,
+  referrerId: number
+): Promise<boolean> {
+  if (userId === referrerId) return false;
+
+  const result = await run(
+    "UPDATE users SET referred_by = ? WHERE user_id = ? AND referred_by IS NULL",
+    [referrerId, userId]
+  );
+  return Number(result.rowsAffected ?? 0) > 0;
+}
+
+export async function creditBalance(userId: number, amount: number): Promise<void> {
+  await run("UPDATE users SET balance = balance + ? WHERE user_id = ?", [
+    amount,
+    userId,
+  ]);
+}
+
+/**
+ * Takes money out of the wallet — but only if it is actually there.
+ *
+ * The `balance >= ?` guard lives in the WHERE clause on purpose: two orders
+ * checked out at the same moment cannot both spend the same money.
+ */
+export async function debitBalance(userId: number, amount: number): Promise<boolean> {
+  const result = await run(
+    "UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
+    [amount, userId, amount]
+  );
+  return Number(result.rowsAffected ?? 0) > 0;
+}
+
+export async function countReferrals(userId: number): Promise<number> {
+  const row = await one<{ total: number }>(
+    "SELECT COUNT(*) AS total FROM users WHERE referred_by = ?",
+    [userId]
+  );
+  return Number(row?.total ?? 0);
+}
+
+/**
+ * Atomically claims the referral reward for an invitee.
+ *
+ * Returns true for exactly one caller. The claim happens *before* any money
+ * moves, so a deposit approval and an order delivery arriving at the same
+ * moment cannot both pay the referrer.
+ */
+export async function claimReferralReward(inviteeId: number): Promise<boolean> {
+  const result = await run(
+    `UPDATE users
+     SET referral_rewarded = 1
+     WHERE user_id = ? AND referral_rewarded = 0 AND referred_by IS NOT NULL`,
+    [inviteeId]
+  );
+  return Number(result.rowsAffected ?? 0) > 0;
+}
+
+/** Total value of this user's delivered orders. */
+export async function sumUserSpent(userId: number): Promise<number> {
+  const row = await one<{ total: number | null }>(
+    "SELECT SUM(price) AS total FROM orders WHERE user_id = ? AND status = 'delivered'",
+    [userId]
+  );
+  return Number(row?.total ?? 0);
+}
+
+export async function countUserDeposits(userId: number): Promise<number> {
+  const row = await one<{ total: number }>(
+    "SELECT COUNT(*) AS total FROM deposits WHERE user_id = ?",
+    [userId]
+  );
+  return Number(row?.total ?? 0);
+}
+
+/* ------------------------------ deposits --------------------------------- */
+
+const DEPOSIT_COLUMNS = `id, code, user_id, amount, currency, status, txn_id,
+  admin_note, created_at, updated_at, approved_at`;
+
+export async function getDeposit(id: number): Promise<Deposit | undefined> {
+  return one<Deposit>(`SELECT ${DEPOSIT_COLUMNS} FROM deposits WHERE id = ?`, [id]);
+}
+
+export async function createDeposit(params: {
+  userId: number;
+  amount: number;
+  currency: string;
+}): Promise<Deposit> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = generateOrderCode("DEP");
+    try {
+      const id = await insert(
+        `INSERT INTO deposits (code, user_id, amount, currency, status)
+         VALUES (?, ?, ?, ?, 'awaiting_payment')`,
+        [code, params.userId, params.amount, params.currency]
+      );
+      const created = await getDeposit(id);
+      if (created) return created;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("unique")) throw error;
+    }
+  }
+  throw new Error("Could not generate a unique deposit code.");
+}
+
+export async function listUserDeposits(
+  userId: number,
+  limit: number,
+  offset = 0
+): Promise<Deposit[]> {
+  return all<Deposit>(
+    `SELECT ${DEPOSIT_COLUMNS} FROM deposits
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT ? OFFSET ?`,
+    [userId, limit, offset]
+  );
+}
+
+export async function listDeposits(options: {
+  statuses?: DepositStatus[];
+  limit: number;
+  offset: number;
+}): Promise<Deposit[]> {
+  const statuses = options.statuses ?? [];
+  const where = statuses.length
+    ? `WHERE status IN (${statuses.map(() => "?").join(", ")})`
+    : "";
+
+  return all<Deposit>(
+    `SELECT ${DEPOSIT_COLUMNS} FROM deposits ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...statuses, options.limit, options.offset]
+  );
+}
+
+export async function countDeposits(statuses?: DepositStatus[]): Promise<number> {
+  const list = statuses ?? [];
+  const where = list.length
+    ? `WHERE status IN (${list.map(() => "?").join(", ")})`
+    : "";
+  const row = await one<{ total: number }>(
+    `SELECT COUNT(*) AS total FROM deposits ${where}`,
+    list
+  );
+  return Number(row?.total ?? 0);
+}
+
+export async function markDepositUnderReview(
+  depositId: number,
+  txnId: string
+): Promise<void> {
+  await run(
+    `UPDATE deposits
+     SET status = 'awaiting_review', txn_id = ?, admin_note = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+    [txnId, depositId]
+  );
+}
+
+export async function markDepositApproved(depositId: number): Promise<void> {
+  await run(
+    `UPDATE deposits
+     SET status = 'approved', approved_at = datetime('now'), admin_note = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+    [depositId]
+  );
+}
+
+export async function markDepositRejected(
+  depositId: number,
+  reason: string
+): Promise<void> {
+  await run(
+    `UPDATE deposits
+     SET status = 'rejected', admin_note = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+    [reason, depositId]
+  );
+}
+
+export async function markDepositCancelled(depositId: number): Promise<void> {
+  await run(
+    `UPDATE deposits
+     SET status = 'cancelled', updated_at = datetime('now')
+     WHERE id = ?`,
+    [depositId]
   );
 }
