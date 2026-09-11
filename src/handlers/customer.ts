@@ -65,6 +65,25 @@ async function showGridScreen(ctx: Context, text: string): Promise<void> {
   await render(ctx, text, kb.welcomeMenu());
 }
 
+/**
+ * Clears a reply keyboard left over from an earlier version of the bot.
+ *
+ * Telegram keeps a reply keyboard on screen until some message replaces it, and
+ * a single message cannot carry both the inline grid and a keyboard change. The
+ * clear therefore rides on its own copy of the text, which is deleted straight
+ * away — the keyboard change survives the deletion, so the chat ends up clean.
+ */
+async function clearStaleReplyKeyboard(ctx: Context, text: string): Promise<void> {
+  try {
+    const probe = await ctx.reply(text, {
+      reply_markup: { remove_keyboard: true },
+    });
+    await ctx.api.deleteMessage(probe.chat.id, probe.message_id);
+  } catch (error) {
+    console.error("[menu] could not clear the reply keyboard:", error);
+  }
+}
+
 async function showHome(ctx: Context): Promise<void> {
   const shop = await getShopInfo();
   await showGridScreen(ctx, t.homeScreen(shop));
@@ -311,6 +330,12 @@ export function registerCustomerHandlers(bot: Bot): void {
   bot.command("start", async (ctx) => {
     await clearState(ctx.from!.id);
     await captureReferral(ctx);
+
+    // Drop any bottom menu left over from the previous reply-keyboard version
+    // before drawing the welcome grid.
+    const shop = await getShopInfo();
+    await clearStaleReplyKeyboard(ctx, t.homeScreen(shop));
+
     await showHome(ctx);
   });
 
