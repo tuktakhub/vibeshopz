@@ -229,32 +229,65 @@ request, and Telegram retries anything that does not return a 2xx.
 
 ## Using the bot
 
-### The persistent menu
+### The welcome grid
 
-The bot installs a reply keyboard that stays under the message box:
+`/start` answers with one short line and a button grid, two buttons per row:
 
 ```
-🏠 Home    🛍 Shop
-📜 Orders  💬 Support
+🎉 Welcome to <Shop>!
+[ 🛍 Shop Products ]  [ 📦 My Orders  ]
+[ 💰 My Wallet    ]  [ 🚀 My Profile ]
+[ 🎁 Refer & Earn ]  [ 💬 Help &       ]
+                      [   Support      ]
 ```
 
-It is attached by `/start` and by every buyer command, and it survives navigation
-because Telegram keeps a reply keyboard on screen until it is replaced. Tapping a
-button sends its label as an ordinary text message, so the labels live in one
-place (`MENU_LABELS` in `src/keyboards.ts`) and the handlers pick them up
-automatically.
+Every destination is also a command, so the grid is a shortcut rather than the
+only way in. It is defined once in `welcomeMenu()` (`src/keyboards.ts`); the
+screens behind it are ordinary inline callbacks.
+
+> A Telegram message can carry only **one** keyboard, so the grid lives on the
+> welcome / help / support screens and every other screen routes back to it.
 
 The `/` command list is published with `setMyCommands` — by `npm run dev` locally
 and by `npm run deploy` in production. Admins additionally get an `/admin` entry
 scoped to their own chat.
 
+### Wallet, referrals and profile
+
+| Screen | What it does |
+|---|---|
+| 💰 My Wallet | Balance, deposit history, and the amount grid for a new top-up |
+| 🚀 My Profile | Name, username, Telegram id, balance, orders, total spent, friends invited |
+| 🎁 Refer & Earn | Personal invite link, share button, invited count and the current reward |
+
+**Deposits** reuse the manual-payment flow: the buyer picks an amount, pays, sends
+the TrxID, and an admin approves it from `/admin → Deposits`. Approval credits the
+wallet and messages the buyer.
+
+**Checkout** spends the wallet first. When the balance covers the price the order is
+delivered immediately — no admin, no waiting — and `orders.paid_from_balance`
+records how it was paid. The balance check happens inside a single `UPDATE ... WHERE
+balance >= ?`, so two fast taps cannot double-spend. If the balance is short, the
+normal manual-payment path runs instead.
+
+**Referrals** work through deep links: `https://t.me/<bot>?start=ref_<CODE>`.
+Attribution is silent, and the reward is paid to the referrer the first time the
+invitee's deposit is approved or their order is delivered — whichever happens
+first. `claimReferralReward()` flips a flag in the database *before* any money
+moves, so a deposit approval and an order delivery arriving together cannot pay
+twice. Set the amount (or switch the programme off with `0`) from
+`/admin → Settings → Referral reward`.
+
 ### Buyer commands
 
 | Command | Action |
 |---|---|
-| `/start`, `/menu` | Main menu (also installs the persistent menu) |
+| `/start`, `/menu` | Main menu (the welcome grid) |
 | `/shop`, `/products` | Browse the catalogue |
 | `/orders` | Order history with statuses |
+| `/wallet` | Balance, top-up and deposit history |
+| `/profile` | Account summary |
+| `/refer` | Invite link and referral stats |
 | `/support` | Support contact and payment number |
 | `/help` | How ordering works |
 | `/cancel` | Abandon the current step |
