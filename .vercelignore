@@ -1,0 +1,19 @@
+# Never upload local dependencies or secrets to Vercel.
+node_modules
+
+# Local environment files — the values live in Vercel's Environment Variables.
+.env
+.env.local
+.env.*.local
+
+# Throwaway artefacts from the local test scripts.
+*-test.db
+*-test.db-wal
+*-test.db-shm
+_*.tmp.*
+_*.tmp.*
+
+# Local Vercel metadata.
+.vercel
+
+dist
