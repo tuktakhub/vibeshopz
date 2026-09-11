@@ -256,13 +256,38 @@ scoped to their own chat.
 
 | Screen | What it does |
 |---|---|
-| 💰 My Wallet | Balance, deposit history, and the amount grid for a new top-up |
+| 💰 My Wallet | Balance, deposit history, and a top-up flow: pick a method, then an amount |
 | 🚀 My Profile | Name, username, Telegram id, balance, orders, total spent, friends invited |
 | 🎁 Refer & Earn | Personal invite link, share button, invited count and the current reward |
 
-**Deposits** reuse the manual-payment flow: the buyer picks an amount, pays, sends
-the TrxID, and an admin approves it from `/admin → Deposits`. Approval credits the
-wallet and messages the buyer.
+**Deposits** run in two steps. The buyer opens **Add funds**, picks a payment
+method, then picks an amount. The deposit screen shows that method's own
+instructions, the buyer pays and sends the TrxID, and an admin approves it from
+`/admin → Deposits`. Approval credits the wallet and messages the buyer. Each
+deposit stores the method it used (`deposits.method_id` / `method_name`), so the
+admin alert names it even if the method is renamed or removed later.
+
+### Payment methods
+
+Payment methods are data, not code. Manage them from **`/admin → Payment
+methods`**:
+
+| Action | What it does |
+|---|---|
+| **+ Add payment method** | Three steps — name, icon emoji, then the details buyers follow |
+| **Edit name / icon / details** | Change one field at a time |
+| **Disable / Enable** | Hides it from buyers without losing its history |
+| **Delete** | Removes it after a confirmation step |
+
+Active methods appear on the buyer's **Add funds** screen, one per row, in
+`sort_order` then `id`. If no method is active buyers see a clear message instead
+of an empty screen.
+
+> **Upgrading an existing shop:** the first run after this change creates one
+> method automatically from the old `payment_method_name` / `payment_number` /
+> `payment_instructions` settings, so nothing breaks mid-flight. It happens once
+> — a `payment_methods_seeded` marker in `settings` means deleting every method
+> does not bring it back on the next deploy.
 
 **Checkout** spends the wallet first. When the balance covers the price the order is
 delivered immediately — no admin, no waiting — and `orders.paid_from_balance`
@@ -297,7 +322,7 @@ twice. Set the amount (or switch the programme off with `0`) from
 
 | Command | Action |
 |---|---|
-| `/admin` | Admin panel with stats, products, orders, settings, admins |
+| `/admin` | Admin panel with stats, products, orders, deposits, payment methods, settings, admins |
 
 From the panel you can:
 
@@ -306,8 +331,12 @@ From the panel you can:
   file, edit the delivery text, change the delivery type, enable/disable, delete.
 - **Orders** — pending payments, all orders, order detail, approve & deliver, or
   reject with a reason.
+- **Deposits** — review wallet top-ups, approve to credit the balance, or reject
+  with a reason.
+- **Payment methods** — add, rename, re-icon, rewrite the details, disable or
+  delete the methods buyers see on the Add funds screen.
 - **Settings** — shop name, support username, payment method, payment number,
-  payment instructions, payment note.
+  payment instructions, payment note, minimum deposit, referral reward.
 - **Admins** — add or remove admins (IDs from `ADMIN_IDS` cannot be removed here).
 
 ### Delivery types

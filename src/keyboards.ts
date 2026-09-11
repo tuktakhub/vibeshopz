@@ -1,5 +1,5 @@
 import { InlineKeyboard } from "grammy";
-import type { Deposit, Order, OrderStatus, Product } from "./types";
+import type { Deposit, Order, OrderStatus, PaymentMethod, Product } from "./types";
 import {
   depositStatusLabel,
   formatMoney,
@@ -125,9 +125,10 @@ export function adminMenu(): InlineKeyboard {
     .text("Pending payments", "adm:o:list:pending:0")
     .text("Deposits", "adm:d:list:0")
     .row()
+    .text("Payment methods", "adm:m:list")
     .text("Settings", "adm:s")
-    .text("Admins", "adm:a:list")
     .row()
+    .text("Admins", "adm:a:list")
     .text("Refresh stats", "adm:home");
 }
 
@@ -309,18 +310,21 @@ export function walletKeyboard(hasDeposits: boolean): InlineKeyboard {
  * Quick top-up amounts derived from the shop minimum, so the buttons stay
  * sensible whatever the admin sets. Free entry is always offered too.
  */
-export function depositAmountKeyboard(minDeposit: number): InlineKeyboard {
+export function depositAmountKeyboard(
+  minDeposit: number,
+  methodId: number
+): InlineKeyboard {
   const presets = [minDeposit, minDeposit * 2, minDeposit * 5, minDeposit * 10];
   const keyboard = new InlineKeyboard();
 
   presets.forEach((amount, index) => {
-    keyboard.text(formatMoney(amount), `wal:amt:${amount}`);
+    keyboard.text(formatMoney(amount), `wal:amt:${amount}:${methodId}`);
     if (index % 2 === 1) keyboard.row();
   });
   if (presets.length % 2 === 1) keyboard.row();
 
-  keyboard.text("✏️ Other amount", "wal:amt:custom").row();
-  keyboard.text("« Back to wallet", "wal:p");
+  keyboard.text("✏️ Other amount", `wal:amt:custom:${methodId}`).row();
+  keyboard.text("« Back", "wal:add");
   return keyboard;
 }
 
@@ -399,4 +403,49 @@ export function adminDepositKeyboard(deposit: Deposit): InlineKeyboard {
   }
   keyboard.text("« Back to deposits", "adm:d:list:0");
   return keyboard;
+}
+
+/* --------------------------- payment methods ----------------------------- */
+
+/** One method per row, mirroring the wallet screen in the reference design. */
+export function paymentMethodKeyboard(methods: PaymentMethod[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const method of methods) {
+    keyboard.text(`${method.emoji} ${method.name}`, `wal:m:${method.id}`).row();
+  }
+  keyboard.text("« Back to wallet", "wal:p");
+  return keyboard;
+}
+
+export function adminMethodsKeyboard(methods: PaymentMethod[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const method of methods) {
+    const flag = method.active ? "" : "[off] ";
+    keyboard
+      .text(`${flag}${method.emoji} ${truncate(method.name, 26)}`, `adm:m:view:${method.id}`)
+      .row();
+  }
+  keyboard.text("+ Add payment method", "adm:m:add").row();
+  keyboard.text("« Admin menu", "adm:home");
+  return keyboard;
+}
+
+export function adminMethodKeyboard(method: PaymentMethod): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Edit name", `adm:m:field:${method.id}:name`)
+    .text("Edit icon", `adm:m:field:${method.id}:emoji`)
+    .row()
+    .text("Edit details", `adm:m:field:${method.id}:instructions`)
+    .row()
+    .text(method.active ? "Disable" : "Enable", `adm:m:toggle:${method.id}`)
+    .text("Delete", `adm:m:delete:${method.id}`)
+    .row()
+    .text("« Back to methods", "adm:m:list");
+}
+
+export function confirmMethodDeleteKeyboard(methodId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Yes, delete it", `adm:m:deleteok:${methodId}`)
+    .row()
+    .text("Keep it", `adm:m:view:${methodId}`);
 }

@@ -471,6 +471,7 @@ async function main(): Promise<void> {
   recordRendered(await push(buttonPress(`adm:p:delete:${productId}`, ADMIN)));
   recordRendered(await push(buttonPress("adm:p:add", ADMIN)));
   recordRendered(await push(buttonPress("adm:s", ADMIN)));
+  recordRendered(await push(buttonPress("adm:m:list", ADMIN)));
   recordRendered(await push(buttonPress("adm:a:list", ADMIN)));
   recordRendered(await push(buttonPress("adm:o:list:all:0", ADMIN)));
   recordRendered(await push(buttonPress(`adm:o:view:${order2.id}:all`, ADMIN)));
@@ -505,13 +506,30 @@ async function main(): Promise<void> {
   checkEqual("a fresh wallet holds nothing", (await repo.getUser(BUYER.id))?.balance, 0);
 
   batch = await push(buttonPress("wal:add"));
+  const addFundsText = lastText(batch);
   check(
-    "wallet offers top-up amounts",
+    "add funds asks for a payment method first",
+    addFundsText.includes("Add funds") && addFundsText.includes("Pick a payment method"),
+    addFundsText.slice(0, 150)
+  );
+
+  const methodButtons = keyboardData(batch).filter((data) => data.startsWith("wal:m:"));
+  check(
+    "the seeded payment method is offered",
+    methodButtons.length > 0,
+    JSON.stringify(keyboardData(batch))
+  );
+
+  const buyerMethodId = Number(methodButtons[0]?.split(":")[2] ?? 0);
+
+  batch = await push(buttonPress(`wal:m:${buyerMethodId}`));
+  check(
+    "picking a method offers top-up amounts",
     keyboardData(batch).some((data) => data.startsWith("wal:amt:")),
     JSON.stringify(keyboardData(batch))
   );
 
-  batch = await push(buttonPress("wal:amt:500"));
+  batch = await push(buttonPress(`wal:amt:500:${buyerMethodId}`));
   const depositText = lastText(batch);
   check(
     "a deposit shows the manual payment details",
@@ -622,7 +640,8 @@ async function main(): Promise<void> {
 
   // The friend tops up: approving their first deposit pays the referrer.
   await push(buttonPress("wal:add", FRIEND));
-  batch = await push(buttonPress("wal:amt:500", FRIEND));
+  await push(buttonPress(`wal:m:${buyerMethodId}`, FRIEND));
+  batch = await push(buttonPress(`wal:amt:500:${buyerMethodId}`, FRIEND));
   const friendDepositId = Number(
     keyboardData(batch)
       .find((data) => data.startsWith("wal:txn:"))
@@ -671,7 +690,78 @@ async function main(): Promise<void> {
     profileText.slice(0, 180)
   );
 
-  /* ----------------------------- 13. hygiene ------------------------------ */
+  /* ------------------ 13. admin: payment method management --------------- */
+
+  batch = await push(buttonPress("adm:m:list", ADMIN));
+  check(
+    "the admin sees the payment methods screen",
+    lastText(batch).includes("Payment methods"),
+    lastText(batch).slice(0, 140)
+  );
+
+  // Add a method through the three-step wizard.
+  await push(buttonPress("adm:m:add", ADMIN));
+  await push(textMessage("USDT (BEP20)", ADMIN));
+  await push(textMessage("💵", ADMIN));
+  batch = await push(textMessage("Send USDT to 0xABC123 on BEP20.", ADMIN));
+  check(
+    "the admin can add a payment method",
+    lastText(batch).includes("Payment method added") && lastText(batch).includes("USDT (BEP20)"),
+    lastText(batch).slice(0, 160)
+  );
+
+  const methods = await repo.listPaymentMethods(false);
+  const usdt = methods.find((entry) => entry.name === "USDT (BEP20)");
+  check("the new method is stored", Boolean(usdt), JSON.stringify(methods.map((m) => m.name)));
+  checkEqual("the new method keeps its icon", usdt?.emoji, "💵");
+  checkEqual("the new method is active", usdt?.active, 1);
+
+  // Buyers see it straight away.
+  batch = await push(buttonPress("wal:add"));
+  check(
+    "buyers see the newly added method",
+    lastText(batch).includes("USDT (BEP20)"),
+    lastText(batch).slice(0, 180)
+  );
+
+  // Edit one field.
+  await push(buttonPress(`adm:m:field:${usdt!.id}:name`, ADMIN));
+  batch = await push(textMessage("USDT TRC20", ADMIN));
+  check(
+    "the admin can rename a method",
+    lastText(batch).includes("USDT TRC20"),
+    lastText(batch).slice(0, 140)
+  );
+  checkEqual(
+    "the rename is stored",
+    (await repo.getPaymentMethod(usdt!.id))?.name,
+    "USDT TRC20"
+  );
+
+  // Disable it and confirm buyers stop seeing it.
+  await push(buttonPress(`adm:m:toggle:${usdt!.id}`, ADMIN));
+  checkEqual(
+    "a disabled method is inactive",
+    (await repo.getPaymentMethod(usdt!.id))?.active,
+    0
+  );
+  batch = await push(buttonPress("wal:add"));
+  check(
+    "buyers no longer see a disabled method",
+    !lastText(batch).includes("USDT TRC20"),
+    lastText(batch).slice(0, 180)
+  );
+
+  // Delete it.
+  await push(buttonPress(`adm:m:delete:${usdt!.id}`, ADMIN));
+  batch = await push(buttonPress(`adm:m:deleteok:${usdt!.id}`, ADMIN));
+  checkEqual(
+    "a deleted method is gone",
+    await repo.getPaymentMethod(usdt!.id),
+    undefined
+  );
+
+  /* ----------------------------- 14. hygiene ------------------------------ */
 
   checkEqual("no handler threw an exception", handlerErrors, []);
 

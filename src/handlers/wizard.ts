@@ -2,14 +2,17 @@ import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { addAdmin, isAdmin } from "../admins";
 import { notifyAdmins, safeSend } from "../notify";
 import {
+  createPaymentMethod,
   createProduct,
   getDeposit,
   getOrder,
+  getPaymentMethod,
   getProduct,
   markDepositRejected,
   markDepositUnderReview,
   markOrderRejected,
   markOrderUnderReview,
+  updatePaymentMethod,
   updateProduct,
 } from "../repository";
 import { setSetting } from "../settings";
@@ -229,7 +232,7 @@ async function routeText(ctx: Context, state: UserState, text: string): Promise<
       return;
     }
 
-    await startDeposit(ctx, amount);
+    await startDeposit(ctx, amount, Number(data.methodId ?? 0));
     return;
   }
 
@@ -520,6 +523,125 @@ async function routeText(ctx: Context, state: UserState, text: string): Promise<
         .text("« Back to orders", `adm:o:list:${scope}:0`)
         .row()
         .text("« Admin menu", "adm:home")
+    );
+    return;
+  }
+
+  /* --- add a payment method (name → icon → details) --- */
+
+  if (name === ADMIN_STATES.methodAdd) {
+    const step = String(data.step ?? "name");
+    const draft = {
+      name: String(data.name ?? ""),
+      emoji: String(data.emoji ?? "💳"),
+    };
+
+    if (step === "name") {
+      if (trimmed.length < 2) {
+        await nudgeOff(ctx, "That name is too short. Send the payment method name again.");
+        return;
+      }
+      await setState(userId, ADMIN_STATES.methodAdd, { step: "emoji", name: trimmed });
+      await sendHtml(
+        ctx,
+        `<b>New payment method — step 2 of 3</b>\n\n` +
+          `Send a single <b>emoji</b> to use as its icon, for example 💵.\n\n` +
+          `Send /skip to use the default 💳.`
+      );
+      return;
+    }
+
+    if (step === "emoji") {
+      const emoji = isSkip ? "💳" : trimmed;
+      if (emoji.length > 8) {
+        await nudgeOff(ctx, "Send just one emoji, or /skip for the default 💳.");
+        return;
+      }
+      await setState(userId, ADMIN_STATES.methodAdd, {
+        step: "instructions",
+        name: draft.name,
+        emoji,
+      });
+      await sendHtml(
+        ctx,
+        `<b>New payment method — step 3 of 3</b>\n\n` +
+          `Send the <b>payment details</b> buyers will follow — wallet address, ` +
+          `account number or instructions. Line breaks are kept.`
+      );
+      return;
+    }
+
+    if (step === "instructions") {
+      if (trimmed.length < 2) {
+        await nudgeOff(ctx, "That is too short. Send the payment details again.");
+        return;
+      }
+
+      const methodId = await createPaymentMethod({
+        name: draft.name,
+        emoji: draft.emoji,
+        instructions: text.trim(),
+      });
+      await clearState(userId);
+
+      const created = await getPaymentMethod(methodId);
+      if (!created) {
+        await answer(ctx, "The method could not be saved. Open /admin and try again.");
+        return;
+      }
+      await sendHtml(
+        ctx,
+        `<b>Payment method added.</b>\n\n${t.adminMethodDetail(created)}`,
+        kb.adminMethodKeyboard(created)
+      );
+      return;
+    }
+
+    await clearState(userId);
+    await answer(ctx, "That step expired. Open /admin and start again.");
+    return;
+  }
+
+  /* --- edit one field of a payment method --- */
+
+  if (name === ADMIN_STATES.methodEdit) {
+    const methodId = Number(data.methodId ?? 0);
+    const field = String(data.field ?? "");
+    const method = await getPaymentMethod(methodId);
+
+    if (!method) {
+      await clearState(userId);
+      await answer(ctx, "That payment method no longer exists.");
+      return;
+    }
+
+    if (field === "name" && trimmed.length < 2) {
+      await nudgeOff(ctx, "That name is too short. Send it again.");
+      return;
+    }
+    if (field === "emoji" && trimmed.length > 8) {
+      await nudgeOff(ctx, "Send just one emoji.");
+      return;
+    }
+    if (field === "instructions" && trimmed.length < 2) {
+      await nudgeOff(ctx, "That is too short. Send the payment details again.");
+      return;
+    }
+    if (field !== "name" && field !== "emoji" && field !== "instructions") {
+      await clearState(userId);
+      await answer(ctx, "That edit is no longer supported. Open the method again from /admin.");
+      return;
+    }
+
+    const value = field === "instructions" ? text.trim() : trimmed;
+    await updatePaymentMethod(methodId, { [field]: value });
+    await clearState(userId);
+
+    const fresh = (await getPaymentMethod(methodId)) ?? method;
+    await sendHtml(
+      ctx,
+      `<b>Saved.</b>\n\n${t.adminMethodDetail(fresh)}`,
+      kb.adminMethodKeyboard(fresh)
     );
     return;
   }

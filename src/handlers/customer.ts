@@ -17,8 +17,10 @@ import {
   findUserByReferralCode,
   getDeposit,
   getOrder,
+  getPaymentMethod,
   getProduct,
   getUser,
+  listPaymentMethods,
   listProducts,
   listUserDeposits,
   listUserOrders,
@@ -156,20 +158,61 @@ async function showReferral(ctx: Context): Promise<void> {
   );
 }
 
-async function showDepositAmounts(ctx: Context): Promise<void> {
-  const shop = await getShopInfo();
+/**
+ * Step one of a top-up: pick where the money comes from.
+ *
+ * Methods are configured by the admin, so the list is whatever the shop
+ * currently accepts. With none configured the buyer gets a clear message rather
+ * than a dead end.
+ */
+async function showAddFunds(ctx: Context): Promise<void> {
+  const userId = ctx.from!.id;
+  const [user, methods] = await Promise.all([
+    loadUser(userId),
+    listPaymentMethods(true),
+  ]);
+
+  if (methods.length === 0) {
+    await render(ctx, t.noPaymentMethods(), kb.walletKeyboard(false));
+    return;
+  }
+
   await render(
     ctx,
-    t.depositAmountPrompt(shop),
-    kb.depositAmountKeyboard(shop.minDeposit)
+    t.addFundsScreen(Number(user.balance ?? 0), methods),
+    kb.paymentMethodKeyboard(methods)
+  );
+}
+
+/** Step two: how much, for the method just chosen. */
+async function showDepositAmounts(ctx: Context, methodId: number): Promise<void> {
+  const [shop, method] = await Promise.all([
+    getShopInfo(),
+    getPaymentMethod(methodId),
+  ]);
+
+  if (!method || !method.active) {
+    await ctx.answerCallbackQuery("That payment method is no longer available.");
+    await showAddFunds(ctx);
+    return;
+  }
+
+  await render(
+    ctx,
+    t.depositAmountForMethod(method, shop),
+    kb.depositAmountKeyboard(shop.minDeposit, method.id)
   );
 }
 
 /**
- * Creates a deposit for a chosen amount and shows the manual payment details.
+ * Creates a deposit for a chosen amount and shows the payment details.
  * Used both by the preset buttons and by the “Other amount” free-text step.
  */
-export async function startDeposit(ctx: Context, amount: number): Promise<void> {
+export async function startDeposit(
+  ctx: Context,
+  amount: number,
+  methodId: number
+): Promise<void> {
   const shop = await getShopInfo();
   const userId = ctx.from!.id;
 
@@ -180,14 +223,17 @@ export async function startDeposit(ctx: Context, amount: number): Promise<void> 
     return;
   }
 
+  const method = await getPaymentMethod(methodId);
   const deposit = await createDeposit({
     userId,
     amount,
     currency: config.currencySymbol,
+    methodId: method?.id ?? null,
+    methodName: method?.name ?? null,
   });
 
   await clearState(userId);
-  await ctx.reply(t.depositCreated(deposit, shop), {
+  await ctx.reply(t.depositCreated(deposit, shop, method), {
     ...HTML,
     reply_markup: kb.depositPaymentKeyboard(deposit.id),
   });
@@ -570,14 +616,23 @@ export function registerCustomerHandlers(bot: Bot): void {
 
     if (action === "add") {
       await ctx.answerCallbackQuery();
-      await showDepositAmounts(ctx);
+      await showAddFunds(ctx);
+      return;
+    }
+
+    if (action === "m") {
+      await ctx.answerCallbackQuery();
+      await showDepositAmounts(ctx, Number.parseInt(value, 10));
       return;
     }
 
     if (action === "amt") {
+      // Data is `wal:amt:<amount|custom>:<methodId>`.
+      const methodId = Number.parseInt(ctx.callbackQuery.data.split(":")[3] ?? "0", 10);
+
       if (value === "custom") {
         const shop = await getShopInfo();
-        await setState(userId, USER_STATES.depositAmount, {});
+        await setState(userId, USER_STATES.depositAmount, { methodId });
         await ctx.answerCallbackQuery();
         await ctx.reply(t.askCustomDepositAmount(shop), {
           ...HTML,
@@ -587,7 +642,7 @@ export function registerCustomerHandlers(bot: Bot): void {
       }
 
       await ctx.answerCallbackQuery();
-      await startDeposit(ctx, Number.parseFloat(value));
+      await startDeposit(ctx, Number.parseFloat(value), methodId);
       return;
     }
 

@@ -6,6 +6,7 @@ import type {
   DepositStatus,
   Order,
   OrderStatus,
+  PaymentMethod,
   Product,
   ShopUser,
 } from "./types";
@@ -443,7 +444,7 @@ export async function countUserDeposits(userId: number): Promise<number> {
 /* ------------------------------ deposits --------------------------------- */
 
 const DEPOSIT_COLUMNS = `id, code, user_id, amount, currency, status, txn_id,
-  admin_note, created_at, updated_at, approved_at`;
+  admin_note, method_id, method_name, created_at, updated_at, approved_at`;
 
 export async function getDeposit(id: number): Promise<Deposit | undefined> {
   return one<Deposit>(`SELECT ${DEPOSIT_COLUMNS} FROM deposits WHERE id = ?`, [id]);
@@ -453,14 +454,24 @@ export async function createDeposit(params: {
   userId: number;
   amount: number;
   currency: string;
+  /** The chosen top-up channel. The name is copied so history survives deletion. */
+  methodId?: number | null;
+  methodName?: string | null;
 }): Promise<Deposit> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const code = generateOrderCode("DEP");
     try {
       const id = await insert(
-        `INSERT INTO deposits (code, user_id, amount, currency, status)
-         VALUES (?, ?, ?, ?, 'awaiting_payment')`,
-        [code, params.userId, params.amount, params.currency]
+        `INSERT INTO deposits (code, user_id, amount, currency, status, method_id, method_name)
+         VALUES (?, ?, ?, ?, 'awaiting_payment', ?, ?)`,
+        [
+          code,
+          params.userId,
+          params.amount,
+          params.currency,
+          params.methodId ?? null,
+          params.methodName ?? null,
+        ]
       );
       const created = await getDeposit(id);
       if (created) return created;
@@ -470,6 +481,75 @@ export async function createDeposit(params: {
     }
   }
   throw new Error("Could not generate a unique deposit code.");
+}
+
+/* --------------------------- payment methods ----------------------------- */
+
+const METHOD_COLUMNS = `id, name, emoji, instructions, active, sort_order,
+  created_at, updated_at`;
+
+export async function listPaymentMethods(activeOnly: boolean): Promise<PaymentMethod[]> {
+  return all<PaymentMethod>(
+    `SELECT ${METHOD_COLUMNS} FROM payment_methods
+     ${activeOnly ? "WHERE active = 1" : ""}
+     ORDER BY sort_order, id`
+  );
+}
+
+export async function getPaymentMethod(id: number): Promise<PaymentMethod | undefined> {
+  return one<PaymentMethod>(
+    `SELECT ${METHOD_COLUMNS} FROM payment_methods WHERE id = ?`,
+    [id]
+  );
+}
+
+export async function createPaymentMethod(input: {
+  name: string;
+  emoji: string;
+  instructions: string;
+}): Promise<number> {
+  // New methods go to the end of the list.
+  const row = await one<{ next: number | null }>(
+    "SELECT MAX(sort_order) AS next FROM payment_methods"
+  );
+  return insert(
+    `INSERT INTO payment_methods (name, emoji, instructions, active, sort_order)
+     VALUES (?, ?, ?, 1, ?)`,
+    [input.name, input.emoji, input.instructions, Number(row?.next ?? 0) + 1]
+  );
+}
+
+const EDITABLE_METHOD_FIELDS = {
+  name: "name",
+  emoji: "emoji",
+  instructions: "instructions",
+  active: "active",
+  sortOrder: "sort_order",
+} as const;
+
+export type EditableMethodField = keyof typeof EDITABLE_METHOD_FIELDS;
+
+export async function updatePaymentMethod(
+  id: number,
+  patch: Partial<Record<EditableMethodField, string | number | null>>
+): Promise<void> {
+  const entries = Object.entries(patch).filter(([key]) => key in EDITABLE_METHOD_FIELDS);
+  if (entries.length === 0) return;
+
+  const assignments = entries.map(
+    ([key]) => `${EDITABLE_METHOD_FIELDS[key as EditableMethodField]} = ?`
+  );
+  const args = entries.map(([, value]) => (value ?? null) as SqlArg);
+
+  await run(
+    `UPDATE payment_methods SET ${assignments.join(", ")}, updated_at = datetime('now')
+     WHERE id = ?`,
+    [...args, id]
+  );
+}
+
+export async function deletePaymentMethod(id: number): Promise<void> {
+  await run("DELETE FROM payment_methods WHERE id = ?", [id]);
 }
 
 export async function listUserDeposits(

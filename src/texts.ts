@@ -1,4 +1,10 @@
-import type { Deposit, Order, Product, ShopUser } from "./types";
+import type {
+  Deposit,
+  Order,
+  PaymentMethod,
+  Product,
+  ShopUser,
+} from "./types";
 import type { ShopInfo } from "./settings";
 import {
   depositStatusLabel,
@@ -225,6 +231,37 @@ export function depositAmountPrompt(shop: ShopInfo): string {
   );
 }
 
+/** The method picker — mirrors the "Add funds" screen in the reference design. */
+export function addFundsScreen(balance: number, methods: PaymentMethod[]): string {
+  const accepted = methods.map((method) => escapeHtml(method.name)).join(", ");
+  return (
+    `💳 <b>Add funds</b>\n` +
+    `———————————\n\n` +
+    `Balance: <b>${formatMoney(balance)}</b>\n\n` +
+    `📌 Pick a payment method.\n` +
+    `✅ Accepted: ${accepted}`
+  );
+}
+
+export function noPaymentMethods(): string {
+  return (
+    `💳 <b>Add funds</b>\n\n` +
+    `No payment method is available right now. Please contact support — the shop ` +
+    `has to add one from the admin panel first.`
+  );
+}
+
+export function depositAmountForMethod(
+  method: PaymentMethod,
+  shop: ShopInfo
+): string {
+  return (
+    `${method.emoji} <b>${escapeHtml(method.name)}</b>\n\n` +
+    `How much do you want to add? The minimum is ${formatMoney(shop.minDeposit)}.\n\n` +
+    `Pick an amount below, or use “Other amount”.`
+  );
+}
+
 export function askCustomDepositAmount(shop: ShopInfo): string {
   return (
     `Send the amount you want to add, as a number.\n\n` +
@@ -232,7 +269,11 @@ export function askCustomDepositAmount(shop: ShopInfo): string {
   );
 }
 
-export function depositCreated(deposit: Deposit, shop: ShopInfo): string {
+export function depositCreated(
+  deposit: Deposit,
+  shop: ShopInfo,
+  method?: PaymentMethod
+): string {
   const lines = [
     `<b>Deposit ${deposit.code}</b>`,
     ``,
@@ -240,15 +281,23 @@ export function depositCreated(deposit: Deposit, shop: ShopInfo): string {
     `Status: ${depositStatusLabel(deposit.status)}`,
     ``,
     `<b>How to pay</b>`,
-    `Method: ${escapeHtml(shop.paymentMethodName)}`,
   ];
 
-  if (shop.paymentNumber) {
-    lines.push(`Number: <code>${escapeHtml(shop.paymentNumber)}</code>`);
+  if (method) {
+    // A configured method carries its own details, so the shop-wide payment
+    // settings are only used by the older single-method setup.
+    lines.push(`Method: ${method.emoji} ${escapeHtml(method.name)}`);
+    if (method.instructions) lines.push(``, escapeHtml(method.instructions));
+  } else {
+    lines.push(`Method: ${escapeHtml(shop.paymentMethodName)}`);
+    if (shop.paymentNumber) {
+      lines.push(`Number: <code>${escapeHtml(shop.paymentNumber)}</code>`);
+    }
+    if (shop.paymentInstructions) {
+      lines.push(``, escapeHtml(shop.paymentInstructions));
+    }
   }
-  if (shop.paymentInstructions) {
-    lines.push(``, escapeHtml(shop.paymentInstructions));
-  }
+
   if (shop.paymentNote) {
     lines.push(``, `<i>${escapeHtml(shop.paymentNote)}</i>`);
   }
@@ -405,7 +454,36 @@ export function adminNewDeposit(deposit: Deposit): string {
     `<b>💰 New wallet deposit</b>\n\n` +
     `<b>Deposit ${deposit.code}</b>\n` +
     `Amount: <b>${formatMoney(deposit.amount)}</b>\n` +
+    `Method: ${escapeHtml(deposit.method_name ?? "—")}\n` +
     `TrxID: <code>${escapeHtml(deposit.txn_id ?? "")}</code>`
+  );
+}
+
+/* ------------------------ admin: payment methods ------------------------ */
+
+export function adminMethodsHeader(methods: PaymentMethod[]): string {
+  if (methods.length === 0) {
+    return (
+      `<b>Payment methods</b>\n\n` +
+      `None yet. Add one — buyers cannot top up their wallet until at least ` +
+      `one method is active.`
+    );
+  }
+
+  const active = methods.filter((method) => method.active).length;
+  return (
+    `<b>Payment methods</b>\n\n` +
+    `${methods.length} configured, ${active} active.\n` +
+    `Tap one to edit it, or add another.`
+  );
+}
+
+export function adminMethodDetail(method: PaymentMethod): string {
+  return (
+    `${method.emoji} <b>${escapeHtml(method.name)}</b>\n\n` +
+    `Status: ${method.active ? "Active" : "Disabled"}\n\n` +
+    `<b>Details shown to the buyer</b>\n` +
+    `${method.instructions ? escapeHtml(method.instructions) : "<i>Not set yet.</i>"}`
   );
 }
 

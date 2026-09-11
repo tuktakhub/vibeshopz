@@ -98,7 +98,23 @@ export interface Deposit {
   status: DepositStatus;
   txn_id: string | null;
   admin_note: string | null;
+  /** Payment method chosen at the time; the name is copied so history survives deletion. */
+  method_id: number | null;
+  method_name: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
+}
+
+/** A top-up channel the admin offers, e.g. bKash, Binance Pay, USDT (BEP20). */
+export interface PaymentMethod {
+  id: number;
+  name: string;
+  emoji: string;
+  /** Where to send the money — number, address, or any free-form detail. */
+  instructions: string;
+  active: number;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 }

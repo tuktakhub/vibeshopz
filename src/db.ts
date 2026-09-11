@@ -67,6 +67,58 @@ async function addMissingColumns(): Promise<void> {
 }
 
 /**
+ * Gives a shop that predates the payment-methods table one method to start
+ * from, built out of the manual payment details it already had.
+ *
+ * It runs at most once: the marker is stored in `settings`, so an admin who
+ * deletes every method does not get this one back on the next deploy.
+ */
+async function seedPaymentMethods(): Promise<void> {
+  const marker = await one<{ value: string }>(
+    "SELECT value FROM settings WHERE key = 'payment_methods_seeded'"
+  );
+  if (marker) return;
+
+  const existing = await one<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM payment_methods"
+  );
+
+  if (Number(existing?.count ?? 0) === 0) {
+    const stored = await all<{ key: string; value: string }>(
+      `SELECT key, value FROM settings
+       WHERE key IN ('payment_method_name', 'payment_number', 'payment_instructions')`
+    );
+    const setting = (key: string): string =>
+      stored.find((row) => row.key === key)?.value?.trim() ?? "";
+
+    const name =
+      setting("payment_method_name") || config.paymentDefaults.methodName || "Manual payment";
+    const number = setting("payment_number") || config.paymentDefaults.number;
+    const instructions =
+      setting("payment_instructions") || config.paymentDefaults.instructions;
+
+    const details = [
+      number ? `Send the amount to: ${number}` : "",
+      instructions,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    await run(
+      `INSERT INTO payment_methods (name, emoji, instructions, active, sort_order)
+       VALUES (?, '💳', ?, 1, 0)`,
+      [name, details]
+    );
+  }
+
+  await run(
+    `INSERT INTO settings (key, value, updated_at)
+     VALUES ('payment_methods_seeded', '1', datetime('now'))
+     ON CONFLICT(key) DO NOTHING`
+  );
+}
+
+/**
  * Creates missing tables, migrates existing ones, then builds any index that
  * depends on a migrated column. Safe to call on every request: the work happens
  * at most once per serverless container.
@@ -80,6 +132,7 @@ export function ensureSchema(): Promise<void> {
       )
       .then(() => addMissingColumns())
       .then(() => db().batch(POST_MIGRATION_SQL.map((sql) => ({ sql })), "write"))
+      .then(() => seedPaymentMethods())
       .then(() => undefined)
       .catch((error) => {
         // Allow a later request to retry if the first attempt failed.

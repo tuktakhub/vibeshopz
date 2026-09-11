@@ -78,6 +78,8 @@ export const ADMIN_STATES = {
   deleteProduct: "admin:product:delete",
   orderReject: "admin:order:reject",
   depositReject: "admin:deposit:reject",
+  methodAdd: "admin:method:add",
+  methodEdit: "admin:method:edit",
   setting: "admin:setting",
   addAdmin: "admin:admin:add",
 } as const;

@@ -8,15 +8,19 @@ import {
   countOrders,
   countProducts,
   creditBalance,
+  deletePaymentMethod,
   deleteProduct,
   getDeposit,
   getOrder,
+  getPaymentMethod,
   getProduct,
   getUser,
   listDeposits,
   listOrders,
+  listPaymentMethods,
   listProducts,
   markDepositApproved,
+  updatePaymentMethod,
   updateProduct,
 } from "../repository";
 import { safeSend } from "../notify";
@@ -133,6 +137,22 @@ async function showDeliveryScreen(ctx: Context, productId: number): Promise<void
       `The buyer receives exactly this after you approve their payment.`,
     kb.adminDeliveryKeyboard(product.id)
   );
+}
+
+/* --------------------------- payment methods ---------------------------- */
+
+async function showMethods(ctx: Context): Promise<void> {
+  const methods = await listPaymentMethods(false);
+  await render(ctx, t.adminMethodsHeader(methods), kb.adminMethodsKeyboard(methods));
+}
+
+async function showMethodDetail(ctx: Context, methodId: number): Promise<void> {
+  const method = await getPaymentMethod(methodId);
+  if (!method) {
+    await render(ctx, "That payment method no longer exists.", kb.adminMethodsKeyboard([]));
+    return;
+  }
+  await render(ctx, t.adminMethodDetail(method), kb.adminMethodKeyboard(method));
 }
 
 /* -------------------------------- orders -------------------------------- */
@@ -266,6 +286,28 @@ const SETTING_PROMPTS: Record<SettingKey, string> = {
 
 function isSettingKey(value: string): value is SettingKey {
   return Object.prototype.hasOwnProperty.call(SETTING_LABELS, value);
+}
+
+/* ------------------- editable payment-method fields --------------------- */
+
+type MethodField = "name" | "emoji" | "instructions";
+
+const METHOD_FIELD_LABELS: Record<MethodField, string> = {
+  name: "name",
+  emoji: "icon",
+  instructions: "payment details",
+};
+
+const METHOD_FIELD_PROMPTS: Record<MethodField, string> = {
+  name: "Send the new name, for example <code>USDT (BEP20)</code>.",
+  emoji: "Send a single emoji to use as its icon, for example 💵.",
+  instructions:
+    "Send the payment details buyers will follow — wallet address, account number " +
+    "or step-by-step instructions. Line breaks are kept.",
+};
+
+function isMethodField(value: string): value is MethodField {
+  return Object.prototype.hasOwnProperty.call(METHOD_FIELD_LABELS, value);
 }
 
 async function showSettings(ctx: Context): Promise<void> {
@@ -616,6 +658,88 @@ export function registerAdminHandlers(bot: Bot): void {
       }
 
       await ctx.answerCallbackQuery("Unknown order action.");
+      return;
+    }
+
+    /* ------------------------- payment methods -------------------------- */
+    if (section === "m") {
+      if (action === "list" || action === "") {
+        await ctx.answerCallbackQuery();
+        await showMethods(ctx);
+        return;
+      }
+
+      if (action === "add") {
+        await setState(adminId, ADMIN_STATES.methodAdd, { step: "name" });
+        await ctx.answerCallbackQuery();
+        await sendHtml(
+          ctx,
+          "<b>New payment method — step 1 of 3</b>\n\n" +
+            "Send the <b>name</b> buyers will see, for example <code>Binance Pay</code> " +
+            "or <code>USDT (BEP20)</code>.\n\nSend /cancel to stop.",
+          kb.cancelActionKeyboard("adm:m:list")
+        );
+        return;
+      }
+
+      const methodId = Number.parseInt(parts[3] ?? "0", 10);
+      const method = await getPaymentMethod(methodId);
+      if (!method) {
+        await ctx.answerCallbackQuery("That payment method no longer exists.");
+        await showMethods(ctx);
+        return;
+      }
+
+      if (action === "view") {
+        await ctx.answerCallbackQuery();
+        await showMethodDetail(ctx, methodId);
+        return;
+      }
+
+      if (action === "toggle") {
+        await updatePaymentMethod(methodId, { active: method.active ? 0 : 1 });
+        await ctx.answerCallbackQuery(method.active ? "Disabled" : "Enabled");
+        await showMethodDetail(ctx, methodId);
+        return;
+      }
+
+      if (action === "field") {
+        const field = parts[4] ?? "";
+        if (!isMethodField(field)) {
+          await ctx.answerCallbackQuery("Unknown field.");
+          return;
+        }
+        await setState(adminId, ADMIN_STATES.methodEdit, { methodId, field });
+        await ctx.answerCallbackQuery();
+        await sendHtml(
+          ctx,
+          `<b>${escapeHtml(method.name)} — ${METHOD_FIELD_LABELS[field]}</b>\n\n` +
+            `${METHOD_FIELD_PROMPTS[field]}\n\nSend /cancel to stop.`,
+          kb.cancelActionKeyboard(`adm:m:view:${methodId}`)
+        );
+        return;
+      }
+
+      if (action === "delete") {
+        await ctx.answerCallbackQuery();
+        await render(
+          ctx,
+          `<b>Delete ${escapeHtml(method.name)}?</b>\n\n` +
+            `Buyers will no longer see it on the Add funds screen. Deposits already ` +
+            `made with it keep their history.`,
+          kb.confirmMethodDeleteKeyboard(methodId)
+        );
+        return;
+      }
+
+      if (action === "deleteok") {
+        await deletePaymentMethod(methodId);
+        await ctx.answerCallbackQuery("Payment method deleted.");
+        await showMethods(ctx);
+        return;
+      }
+
+      await ctx.answerCallbackQuery("Unknown payment method action.");
       return;
     }
 

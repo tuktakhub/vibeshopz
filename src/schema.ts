@@ -59,6 +59,17 @@ export const SCHEMA_SQL: string[] = [
       approved_at TEXT
     )`,
 
+   `CREATE TABLE IF NOT EXISTS payment_methods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      emoji TEXT NOT NULL DEFAULT '💳',
+      instructions TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+
    `CREATE TABLE IF NOT EXISTS users (
       user_id INTEGER PRIMARY KEY,
       first_name TEXT,
@@ -96,6 +107,7 @@ export const SCHEMA_SQL: string[] = [
    `CREATE INDEX IF NOT EXISTS idx_products_active ON products (active, id)`,
    `CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits (user_id, id DESC)`,
    `CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits (status, id DESC)`,
+   `CREATE INDEX IF NOT EXISTS idx_payment_methods_active ON payment_methods (active, sort_order, id)`,
 ];
 
 /**
@@ -122,6 +134,8 @@ export const ADDED_COLUMNS: { table: string; column: string; definition: string 
   { table: "users", column: "referred_by", definition: "INTEGER" },
   { table: "users", column: "referral_rewarded", definition: "INTEGER NOT NULL DEFAULT 0" },
   { table: "orders", column: "paid_from_balance", definition: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "deposits", column: "method_id", definition: "INTEGER" },
+  { table: "deposits", column: "method_name", definition: "TEXT" },
 ];
 
 /** Keys that the admin panel is allowed to write into `settings`. */
