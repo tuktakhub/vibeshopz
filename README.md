@@ -201,6 +201,22 @@ Send `/start` to your bot. To become an admin, send `/id` and add the number to
    - `https://your-app.vercel.app/api/health` should return `{"ok":true,"database":"connected",…}`
    - `npm run webhook:info` should show your URL with no `last_error_message`
 
+### One-command alternative
+
+Rather than clicking through the dashboard, `npm run deploy` performs the whole
+deployment: it links the project, uploads every non-empty value from `.env` into
+the **Production** environment (written as UTF-8, so symbols such as the Taka sign
+survive), deploys to production, and registers the Telegram webhook against the
+new URL. Values are never echoed to the terminal.
+
+```bash
+vercel login     # once, in your own terminal
+npm run deploy
+```
+
+Flags: `--project=NAME` to use a different Vercel project name, and
+`--no-webhook` to deploy without touching the webhook.
+
 ### Webhook endpoint
 
 `POST https://your-app.vercel.app/api/webhook`

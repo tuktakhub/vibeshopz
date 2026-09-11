@@ -17,6 +17,7 @@
     "test:local": "tsx scripts/smoke-test.ts",
     "test:bot": "tsx scripts/bot-test.ts",
     "test": "npm run test:local && npm run test:bot && npm run typecheck",
+    "deploy": "tsx scripts/deploy-vercel.ts",
     "webhook:set": "tsx scripts/set-webhook.ts",
     "webhook:info": "tsx scripts/set-webhook.ts --info",
     "webhook:delete": "tsx scripts/set-webhook.ts --delete"
