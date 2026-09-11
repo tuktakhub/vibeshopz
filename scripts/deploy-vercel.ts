@@ -18,6 +18,7 @@
  *   --no-webhook   deploy only; skip step 5
  *   --project=NAME override the Vercel project name (default: vibeshopz)
  */
+import "../src/env";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -118,6 +119,41 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/**
+ * Finds the project's stable production domain (e.g. `my-shop.vercel.app`).
+ *
+ * `vercel deploy` prints the build-specific URL, which contains a hash and sits
+ * behind Vercel's deployment protection — Telegram gets a 401 from it. The
+ * stable alias is the one a webhook must use.
+ *
+ * Requires VERCEL_TOKEN; returns undefined when the CLI is authenticated through
+ * `vercel login` instead, in which case the caller warns about the fallback.
+ */
+async function resolveStableDomain(project: string): Promise<string | undefined> {
+  const token = process.env.VERCEL_TOKEN;
+  if (!token) return undefined;
+
+  try {
+    const response = await fetch(`https://api.vercel.com/v9/projects/${project}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return undefined;
+
+    const data = (await response.json()) as {
+      latestDeployments?: { alias?: string[] }[];
+    };
+    const aliases = (data.latestDeployments?.[0]?.alias ?? []).filter((alias) =>
+      alias.endsWith(".vercel.app")
+    );
+    if (aliases.length === 0) return undefined;
+
+    // The team-scoped alias is always longer than the bare project one.
+    return aliases.sort((a, b) => a.length - b.length)[0];
+  } catch {
+    return undefined;
+  }
+}
+
 /* -------------------------------- main ---------------------------------- */
 
 async function main(): Promise<void> {
@@ -136,6 +172,10 @@ async function main(): Promise<void> {
   }
 
   step("Checking the Vercel CLI login");
+  if (process.env.VERCEL_TOKEN) {
+    // Loaded from .env by src/env.ts — keeps the token off the command line.
+    console.log("using VERCEL_TOKEN from .env");
+  }
   const whoami = await run("vercel whoami");
   if (whoami.code !== 0) {
     console.error(whoami.stdout + whoami.stderr);
@@ -193,9 +233,24 @@ async function main(): Promise<void> {
   }
   console.log(`deployed: ${deploymentUrl}`);
 
+  // Prefer the stable production domain over the build-specific URL.
+  const stableDomain = await resolveStableDomain(PROJECT);
+  const publicBase = stableDomain ? `https://${stableDomain}` : deploymentUrl;
+
+  if (stableDomain) {
+    console.log(`stable domain: ${publicBase}`);
+  } else {
+    console.warn(
+      "\nWARNING: could not resolve the stable production domain, so the webhook will\n" +
+        "point at the build-specific URL. That URL is behind Vercel deployment\n" +
+        "protection and Telegram will receive a 401 from it. Re-point the webhook with:\n" +
+        "  npm run webhook:set -- https://<your-project>.vercel.app"
+    );
+  }
+
   if (!SET_WEBHOOK) {
     console.log(
-      `\nSkipped the webhook. Register it yourself with:\n  npm run webhook:set -- ${deploymentUrl}`
+      `\nSkipped the webhook. Register it yourself with:\n  npm run webhook:set -- ${publicBase}`
     );
     return;
   }
@@ -203,7 +258,7 @@ async function main(): Promise<void> {
   step("Registering the Telegram webhook");
   const token = env.get("BOT_TOKEN")!;
   const secret = env.get("WEBHOOK_SECRET") ?? "";
-  const webhookUrl = `${deploymentUrl.replace(/\/+$/, "")}/api/webhook`;
+  const webhookUrl = `${publicBase.replace(/\/+$/, "")}/api/webhook`;
 
   const body: Record<string, unknown> = {
     url: webhookUrl,
@@ -232,7 +287,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nDone. Open ${deploymentUrl}/api/health to confirm the database connection,\n` +
+    `\nDone. Open ${publicBase}/api/health to confirm the database connection,\n` +
       `then send /admin to your bot in Telegram.`
   );
 }

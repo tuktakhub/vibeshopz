@@ -322,6 +322,8 @@ In total the suite runs 155 assertions.
 | `/admin` says you are not an admin | Send `/id` to the bot and add that number to `ADMIN_IDS`, then redeploy. |
 | "Telegram rejected the stored file id" | Re-upload the file to the product from the admin panel. |
 | Delivery worked but the buyer got nothing | The buyer may have blocked the bot; the order stays under review so you can retry. |
+| Vercel build fails: `No Output Directory named "public" found` | Keep the empty `public/` directory that ships with the repo. An API-only Vercel project still declares an output directory, and Vercel falls back to `public`. |
+| The bot stops responding after a redeploy | The webhook is pointing at a deployment-specific URL (`…-<hash>-….vercel.app`), which is behind Vercel's deployment protection. Point it at the stable production domain instead: `npm run webhook:set -- https://<project>.vercel.app`. |
 
 ---
 
