@@ -171,6 +171,22 @@ async function main(): Promise<void> {
     return "";
   }
 
+  /** Labels of the reply keyboard (the persistent bottom menu), flattened. */
+  function replyKeyboardLabels(batch: MockCall[]): string[] {
+    const labels: string[] = [];
+    for (const call of batch) {
+      const markup = (call.payload.reply_markup ?? call.payload.replyMarkup) as
+        | { keyboard?: { text?: string }[][] }
+        | undefined;
+      for (const row of markup?.keyboard ?? []) {
+        for (const button of row) {
+          if (button.text) labels.push(button.text);
+        }
+      }
+    }
+    return labels;
+  }
+
   function keyboardData(batch: MockCall[]): string[] {
     const data: string[] = [];
     for (const call of batch) {
@@ -206,7 +222,11 @@ async function main(): Promise<void> {
   let batch = await push(textMessage("/start"));
   let text = lastText(batch);
   check("buyer /start replies with the shop name", text.includes("Test Shop"), text.slice(0, 80));
-  check("buyer /start shows the main menu buttons", keyboardData(batch).includes("cat:p:0"));
+  check(
+    "buyer /start shows the persistent menu",
+    replyKeyboardLabels(batch).join("|") === "🏠 Home|🛍 Shop|📜 Orders|💬 Support",
+    JSON.stringify(replyKeyboardLabels(batch))
+  );
 
   /* --------------------- 2. /admin refuses non-admins --------------------- */
 
@@ -470,7 +490,30 @@ async function main(): Promise<void> {
     check(`button "${data}" reaches a handler`, !fellThrough);
   }
 
-  /* ----------------------------- 12. hygiene ------------------------------ */
+  /* ----------- 12. every persistent menu label navigates somewhere -------- */
+
+  // The bottom menu sends plain text, so an unhandled label would silently fall
+  // through to the catch-all handler. Each screen is compared against that
+  // fallback to prove the label was actually routed.
+  const fallbackText = lastText(await push(textMessage("zzz not a menu label")));
+
+  const homeText = lastText(await push(textMessage("🏠 Home")));
+  check(
+    "menu label opens the main menu: 🏠 Home",
+    homeText === fallbackText,
+    homeText.slice(0, 100)
+  );
+
+  for (const label of ["🛍 Shop", "📜 Orders", "💬 Support"]) {
+    const labelText = lastText(await push(textMessage(label)));
+    check(
+      `menu label navigates: ${label}`,
+      labelText.length > 0 && labelText !== fallbackText,
+      labelText.slice(0, 100)
+    );
+  }
+
+  /* ----------------------------- 13. hygiene ------------------------------ */
 
   checkEqual("no handler threw an exception", handlerErrors, []);
 

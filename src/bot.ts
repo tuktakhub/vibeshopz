@@ -38,7 +38,7 @@ bot.on("message", async (ctx) => {
   if (state) {
     await ctx.reply(
       "I am waiting for your answer to the question above. Send /cancel to stop.",
-      { parse_mode: "HTML" }
+      { parse_mode: "HTML", reply_markup: kb.mainReplyKeyboard() }
     );
     return;
   }
@@ -46,7 +46,7 @@ bot.on("message", async (ctx) => {
   const shop = await getShopInfo();
   await ctx.reply(t.mainMenuText(shop), {
     parse_mode: "HTML",
-    reply_markup: kb.mainMenu(),
+    reply_markup: kb.mainReplyKeyboard(),
     link_preview_options: { is_disabled: true },
   });
 });

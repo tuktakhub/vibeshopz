@@ -22,6 +22,7 @@ import "../src/env";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { ADMIN_COMMANDS, BOT_COMMANDS } from "../src/commands";
 
 const ARGS = process.argv.slice(2);
 
@@ -285,6 +286,34 @@ async function main(): Promise<void> {
     console.log(`  url       : ${info.result.url}`);
     console.log(`  last error: ${info.result.last_error_message ?? "(none)"}`);
   }
+
+  step("Publishing the bot command list");
+  const publish = (payload: unknown) =>
+    fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then((r) => r.json() as Promise<{ ok: boolean; description?: string }>);
+
+  const commandResult = await publish({ commands: BOT_COMMANDS });
+  if (!commandResult.ok) {
+    fail(`Telegram rejected the command list: ${commandResult.description}`);
+  }
+
+  const adminIds = (env.get("ADMIN_IDS") ?? "")
+    .split(/[,\s;]+/)
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value));
+
+  for (const chatId of adminIds) {
+    // A per-chat scope is the only way to show /admin to admins alone.
+    await publish({ commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: chatId } }).catch(
+      () => undefined
+    );
+  }
+  console.log(
+    `${BOT_COMMANDS.length} commands published, plus /admin for ${adminIds.length} admin chat(s).`
+  );
 
   console.log(
     `\nDone. Open ${publicBase}/api/health to confirm the database connection,\n` +

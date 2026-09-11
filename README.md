@@ -229,12 +229,31 @@ request, and Telegram retries anything that does not return a 2xx.
 
 ## Using the bot
 
+### The persistent menu
+
+The bot installs a reply keyboard that stays under the message box:
+
+```
+🏠 Home    🛍 Shop
+📜 Orders  💬 Support
+```
+
+It is attached by `/start` and by every buyer command, and it survives navigation
+because Telegram keeps a reply keyboard on screen until it is replaced. Tapping a
+button sends its label as an ordinary text message, so the labels live in one
+place (`MENU_LABELS` in `src/keyboards.ts`) and the handlers pick them up
+automatically.
+
+The `/` command list is published with `setMyCommands` — by `npm run dev` locally
+and by `npm run deploy` in production. Admins additionally get an `/admin` entry
+scoped to their own chat.
+
 ### Buyer commands
 
 | Command | Action |
 |---|---|
-| `/start`, `/menu` | Main menu |
-| `/products` | Browse the catalogue |
+| `/start`, `/menu` | Main menu (also installs the persistent menu) |
+| `/shop`, `/products` | Browse the catalogue |
 | `/orders` | Order history with statuses |
 | `/support` | Support contact and payment number |
 | `/help` | How ordering works |
@@ -291,7 +310,7 @@ the product wizard, the rejection path, and a button audit that presses **every*
 callback the bot renders to prove no button is orphaned. No token or network
 access is required.
 
-In total the suite runs 155 assertions.
+In total the two scripts run more than 150 assertions.
 
 ---
 

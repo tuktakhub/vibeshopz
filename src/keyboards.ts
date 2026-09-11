@@ -1,6 +1,37 @@
-import { InlineKeyboard } from "grammy";
+import { InlineKeyboard, Keyboard } from "grammy";
 import type { Order, OrderStatus, Product } from "./types";
 import { formatMoney, statusLabel, truncate } from "./utils";
+
+/* --------------------------- persistent menu ---------------------------- */
+
+/**
+ * Labels of the always-visible bottom menu.
+ *
+ * A reply keyboard sends its label back as an ordinary text message, so the bot
+ * listens for these exact strings — changing a label here is enough, the
+ * handlers pick the new value up automatically.
+ */
+export const MENU_LABELS = {
+  home: "🏠 Home",
+  shop: "🛍 Shop",
+  orders: "📜 Orders",
+  support: "💬 Support",
+} as const;
+
+/**
+ * The persistent menu under the message box.
+ *
+ * Unlike an inline keyboard this stays on screen until it is replaced, which is
+ * what makes the bot feel like it has a real menu. Laid out as a 2x2 grid.
+ */
+export function mainReplyKeyboard(): Keyboard {
+  return new Keyboard()
+    .text(MENU_LABELS.home)
+    .text(MENU_LABELS.shop)
+    .row()
+    .text(MENU_LABELS.orders)
+    .text(MENU_LABELS.support);
+}
 
 /* ----------------------------- customer --------------------------------- */
 

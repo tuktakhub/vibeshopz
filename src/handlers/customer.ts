@@ -1,6 +1,6 @@
 import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { config } from "../config";
-import { getShopInfo } from "../settings";
+import { getShopInfo, type ShopInfo } from "../settings";
 import {
   countProducts,
   countUserOrders,
@@ -23,6 +23,34 @@ const HTML = {
   parse_mode: HTML_PARSE_MODE,
   link_preview_options: { is_disabled: true },
 };
+
+/* ------------------------ persistent menu screens ----------------------- */
+
+/**
+ * Renders one of the screens that belong to the persistent bottom menu.
+ *
+ * Commands and menu taps always get a fresh message, because only `sendMessage`
+ * can attach a reply keyboard. Inline callbacks edit the existing message and
+ * clear its inline buttons — the reply keyboard is already on screen.
+ */
+async function showMenuScreen(
+  ctx: Context,
+  build: (shop: ShopInfo) => string
+): Promise<void> {
+  const shop = await getShopInfo();
+  const text = build(shop);
+
+  if (ctx.callbackQuery) {
+    await render(ctx, text, new InlineKeyboard());
+    return;
+  }
+
+  await ctx.reply(text, { ...HTML, reply_markup: kb.mainReplyKeyboard() });
+}
+
+const showHome = (ctx: Context) => showMenuScreen(ctx, (shop) => t.mainMenuText(shop));
+const showHelp = (ctx: Context) => showMenuScreen(ctx, (shop) => t.helpText(shop));
+const showSupport = (ctx: Context) => showMenuScreen(ctx, (shop) => t.supportText(shop));
 
 async function showCatalogue(
   ctx: Context,
@@ -124,15 +152,14 @@ export function registerCustomerHandlers(bot: Bot): void {
   bot.command(["start", "menu"], async (ctx) => {
     await clearState(ctx.from!.id);
     const shop = await getShopInfo();
-    await ctx.reply(t.welcome(shop), { ...HTML, reply_markup: kb.mainMenu() });
+    await ctx.reply(t.welcome(shop), { ...HTML, reply_markup: kb.mainReplyKeyboard() });
   });
 
   bot.command("help", async (ctx) => {
-    const shop = await getShopInfo();
-    await ctx.reply(t.helpText(shop), { ...HTML, reply_markup: kb.mainMenu() });
+    await showHelp(ctx);
   });
 
-  bot.command("products", async (ctx) => {
+  bot.command(["products", "shop"], async (ctx) => {
     await showCatalogue(ctx, 0, false);
   });
 
@@ -141,13 +168,37 @@ export function registerCustomerHandlers(bot: Bot): void {
   });
 
   bot.command("support", async (ctx) => {
-    const shop = await getShopInfo();
-    await ctx.reply(t.supportText(shop), { ...HTML, reply_markup: kb.mainMenu() });
+    await showSupport(ctx);
   });
 
   bot.command("cancel", async (ctx) => {
     await clearState(ctx.from!.id);
-    await ctx.reply(t.cancelledWizard(), { ...HTML, reply_markup: kb.mainMenu() });
+    await ctx.reply(t.cancelledWizard(), { ...HTML, reply_markup: kb.mainReplyKeyboard() });
+  });
+
+  /* ----------------------- persistent menu taps ------------------------- */
+
+  // Tapping a reply-keyboard button sends its label back as a plain text
+  // message. These are registered before the free-text wizard handler so a
+  // menu tap always navigates instead of being swallowed by an open wizard.
+  bot.hears(kb.MENU_LABELS.home, async (ctx) => {
+    await clearState(ctx.from!.id);
+    await showHome(ctx);
+  });
+
+  bot.hears(kb.MENU_LABELS.shop, async (ctx) => {
+    await clearState(ctx.from!.id);
+    await showCatalogue(ctx, 0, false);
+  });
+
+  bot.hears(kb.MENU_LABELS.orders, async (ctx) => {
+    await clearState(ctx.from!.id);
+    await showOrders(ctx, 0, false);
+  });
+
+  bot.hears(kb.MENU_LABELS.support, async (ctx) => {
+    await clearState(ctx.from!.id);
+    await showSupport(ctx);
   });
 
   bot.command("id", async (ctx) => {
@@ -180,13 +231,12 @@ export function registerCustomerHandlers(bot: Bot): void {
     }
 
     await ctx.answerCallbackQuery();
-    const shop = await getShopInfo();
     if (action === "home") {
-      await render(ctx, t.mainMenuText(shop), kb.mainMenu());
+      await showHome(ctx);
     } else if (action === "help") {
-      await render(ctx, t.helpText(shop), kb.mainMenu());
+      await showHelp(ctx);
     } else {
-      await render(ctx, t.supportText(shop), kb.mainMenu());
+      await showSupport(ctx);
     }
   });
 
