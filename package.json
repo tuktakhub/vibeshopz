@@ -1,0 +1,34 @@
+{
+  "name": "telegram-digital-store-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram bot for selling digital products with manual payment, admin approval and automatic delivery. Runs on Vercel with a Turso (libSQL) database.",
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "dev": "tsx watch src/dev.ts",
+    "start": "tsx src/dev.ts",
+    "db:init": "tsx scripts/init-db.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "test:local": "tsx scripts/smoke-test.ts",
+    "test:bot": "tsx scripts/bot-test.ts",
+    "test": "npm run test:local && npm run test:bot && npm run typecheck",
+    "webhook:set": "tsx scripts/set-webhook.ts",
+    "webhook:info": "tsx scripts/set-webhook.ts --info",
+    "webhook:delete": "tsx scripts/set-webhook.ts --delete"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "dotenv": "^17.4.2",
+    "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

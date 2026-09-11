@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vercel/
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+.*-test.db
+.*-test.db-wal
+.*-test.db-shm
+.DS_Store
+.idea/
+.vscode/
